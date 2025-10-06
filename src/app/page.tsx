@@ -9,69 +9,6 @@ declare global {
     }
 }
 
-// --- TTS HELPER FUNCTIONS (Copied from TextToSpeechApp) ---
-// Note: The TTS API returns raw PCM 16-bit audio data which must be wrapped in a WAV file container.
-
-// تبدیل رشته Base64 به آرایه بافر
-function base64ToArrayBuffer(base64) {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes.buffer;
-}
-
-// نوشتن هدر WAV
-function writeString(view, offset, string) {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-}
-
-// تبدیل داده‌های PCM (Int16Array) به Blob فایل WAV
-function pcmToWav(pcm16, sampleRate) {
-  const buffer = new ArrayBuffer(44 + pcm16.length * 2);
-  const view = new DataView(buffer);
-  
-  // RIFF identifier
-  writeString(view, 0, 'RIFF');
-  // File length
-  view.setUint32(4, 36 + pcm16.length * 2, true);
-  // 'WAVE'
-  writeString(view, 8, 'WAVE');
-  // fmt chunk
-  writeString(view, 12, 'fmt ');
-  // Chunk length (16 for PCM)
-  view.setUint32(16, 16, true);
-  // Audio format (1 for PCM)
-  view.setUint16(20, 1, true);
-  // Number of channels (Mono)
-  view.setUint16(22, 1, true);
-  // Sample rate
-  view.setUint32(24, sampleRate, true);
-  // Byte rate (SampleRate * NumChannels * BitsPerSample/8)
-  view.setUint32(28, sampleRate * 2, true);
-  // Block align (NumChannels * BitsPerSample/8)
-  view.setUint16(32, 2, true);
-  // Bits per sample
-  view.setUint16(34, 16, true);
-  
-  // data chunk
-  writeString(view, 36, 'data');
-  // Chunk length (data size)
-  view.setUint32(40, pcm16.length * 2, true);
-  
-  // PCM data
-  let offset = 44;
-  for (let i = 0; i < pcm16.length; i++, offset += 2) {
-    view.setInt16(offset, pcm16[i], true);
-  }
-  
-  return new Blob([view], { type: 'audio/wav' });
-}
-
 // --- Types and Constants ---
 
 interface MessageData {
@@ -95,12 +32,89 @@ interface Payload {
 }
 
 const GEMINI_API_KEY = typeof __api_key !== 'undefined' ? __api_key : "AIzaSyCv4BNi1bigs-nGa5jzE5QzIW05mmwf4AI";
-
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const isSpeechSupported = typeof SpeechRecognition === 'function';
+// Native TTS is explicitly disabled and replaced by Gemini TTS
 const isVoiceAvailable = isSpeechSupported; 
 
-// --- Icons (Unchanged) ---
+// --- Audio Utility Functions for PCM to WAV Conversion (Required for Gemini TTS API) ---
+
+/**
+ * Converts a base64 string to an ArrayBuffer.
+ * @param base64 Base64 encoded string.
+ */
+const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
+    const binaryString = atob(base64);
+    const len = binaryString.length;
+    // CRITICAL FIX: Initialize Uint8Array before populating it
+    const bytes = new Uint8Array(len); 
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+};
+
+/**
+ * Writes a string to a DataView starting at the specified offset.
+ */
+const writeString = (view: DataView, offset: number, string: string): void => {
+    for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+    }
+};
+
+/**
+ * Converts 16-bit signed PCM data to a standard WAV audio blob.
+ * @param pcm16 Int16Array of the raw PCM data.
+ * @param sampleRate The sample rate (e.g., 24000).
+ */
+const pcmToWav = (pcm16: Int16Array, sampleRate: number): Blob => {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    
+    // Total size of the PCM data in bytes
+    const dataSize = pcm16.length * 2; 
+    
+    // Total size of the WAV file header + data
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    let offset = 0;
+
+    // RIFF chunk
+    writeString(view, offset, 'RIFF'); offset += 4;
+    view.setUint32(offset, 36 + dataSize, true); offset += 4; // Chunk Size (Total size - 8)
+    writeString(view, offset, 'WAVE'); offset += 4;
+
+    // FMT sub-chunk
+    writeString(view, offset, 'fmt '); offset += 4;
+    view.setUint32(offset, 16, true); offset += 4;      // Sub-chunk size (16 for PCM)
+    view.setUint16(offset, 1, true); offset += 2;       // Audio format (1 for PCM)
+    view.setUint16(offset, numChannels, true); offset += 2; // Number of channels
+    view.setUint32(offset, sampleRate, true); offset += 4; // Sample rate
+    view.setUint32(offset, byteRate, true); offset += 4;   // Byte rate
+    view.setUint16(offset, blockAlign, true); offset += 2; // Block align
+    view.setUint16(offset, bitsPerSample, true); offset += 2; // Bits per sample
+
+    // DATA sub-chunk
+    writeString(view, offset, 'data'); offset += 4;
+    // CRITICAL FIX: Previously, this line was incorrectly writing 'data' again.
+    // It must write the size of the data payload.
+    view.setUint32(offset, dataSize, true); offset += 4; // Data size
+    
+    // Write PCM samples (Int16)
+    for (let i = 0; i < pcm16.length; i++) {
+        view.setInt16(offset, pcm16[i], true);
+        offset += 2;
+    }
+
+    return new Blob([view], { type: 'audio/wav' });
+};
+
+
+// --- Icons ---
 
 const SendIcon: FC = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
@@ -132,17 +146,24 @@ const StopIcon: FC = () => (
     </svg>
 );
 
-// --- API Helper Function (Unchanged, for text generation) ---
+const SpeakerIcon: FC = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 text-indigo-400 hover:text-indigo-300`}>
+        <polyline points="15 8 20 13 15 18"></polyline>
+        <path d="M10 5V19"></path>
+        <path d="M4 17L10 12L4 7V17Z"></path>
+    </svg>
+);
+
+// --- API Helper Function (for Text Generation) ---
 
 /**
  * Helper function for API call with exponential backoff (for Text Generation)
  */
-const fetchWithRetry = async (payload: Payload): Promise<string> => {
+const fetchWithRetry = async (payload: Payload, modelName: string): Promise<string> => {
     const maxRetries = 5;
     let attempt = 0;
     
     const apiKey = GEMINI_API_KEY; 
-    const modelName = "gemini-2.5-flash-preview-05-20";
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
     while (attempt < maxRetries) {
@@ -196,127 +217,136 @@ const App: FC = () => {
     const [isGeneratingIdeas, setIsGeneratingIdeas] = useState<boolean>(false);
     const [isRecording, setIsRecording] = useState<boolean>(false);
     const [voiceStatusMessage, setVoiceStatusMessage] = useState<string | null>(null);
+    const [ttsError, setTtsError] = useState<string | null>(null); // New state for TTS errors
+    const [speakingIndex, setSpeakingIndex] = useState<number | null>(null); 
     const recognitionRef = useRef<any>(null); 
     const messagesEndRef = useRef<HTMLDivElement>(null); 
     
-    // Ref for the Audio object used for TTS playback
-    const audioInstanceRef = useRef<HTMLAudioElement | null>(null);
-
-    // Initialize the Audio element once
+    // Cleanup any existing audio playback context on component unmount
     useEffect(() => {
-        if (!audioInstanceRef.current) {
-            audioInstanceRef.current = new Audio();
-        }
+        return () => {
+            if (recognitionRef.current) {
+                recognitionRef.current.stop();
+            }
+        };
     }, []);
 
-
-    // --- TTS Playback Function (Rewritten to use Gemini API) ---
-
+    
+    // --- TTS Playback Function (Using Gemini TTS API) ---
+    
     /**
-     * Text-to-Speech (TTS) function using Gemini API
+     * Text-to-Speech (TTS) function using Gemini API.
      */
-    const speakResponse = useCallback(async (text: string, onEndCallback?: () => void) => {
-        if (!text.trim() || !audioInstanceRef.current) {
-             if (onEndCallback) onEndCallback();
-             return;
+    const speakResponse = useCallback(async (text: string, messageIndex: number | null = null, onEndCallback?: () => void) => {
+        
+        // Clear previous errors
+        setTtsError(null);
+        
+        // Set state before API call
+        if (messageIndex !== null) {
+            setSpeakingIndex(messageIndex);
         }
 
-        // 1. Stop any current playback
-        const currentAudio = audioInstanceRef.current;
-        currentAudio.pause();
-        currentAudio.src = '';
-        
-        // 2. TTS API Setup
-        const ttsApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${GEMINI_API_KEY}`;
-        const voiceConfig = {
-            prebuiltVoiceConfig: { voiceName: "Kore" } // Using Kore for high-quality Persian voice
-        };
-        
+        const TTS_MODEL_NAME = "gemini-2.5-flash-preview-tts";
+        const apiKey = GEMINI_API_KEY; 
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL_NAME}:generateContent?key=${apiKey}`;
+
         const payload = {
             contents: [{ parts: [{ text: text }] }],
             generationConfig: {
                 responseModalities: ["AUDIO"],
-                speechConfig: { voiceConfig: voiceConfig }
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { 
+                            // Using a voice that supports Farsi (Kore is a good general purpose voice)
+                            voiceName: "Kore" 
+                        }
+                    }
+                }
             },
-            model: "gemini-2.5-flash-preview-tts"
         };
         
-        let attempts = 0;
-        const maxAttempts = 3;
+        try {
+            console.log("TTS: Sending request for text:", text.substring(0, 50) + '...');
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
 
-        while (attempts < maxAttempts) {
-            try {
-                const response = await fetch(ttsApiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                if (!response.ok) {
-                    throw new Error(`خطا در API TTS: ${response.status}. Retrying...`);
-                }
-
-                const result = await response.json();
-                const part = result?.candidates?.[0]?.content?.parts?.[0];
-                const audioData = part?.inlineData?.data;
-                const mimeType = part?.inlineData?.mimeType;
-
-                if (audioData && mimeType && mimeType.startsWith("audio/")) {
-                    // Conversion to WAV
-                    const rateMatch = mimeType.match(/rate=(\d+)/);
-                    const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000; 
-
-                    const pcmDataBuffer = base64ToArrayBuffer(audioData);
-                    const pcm16 = new Int16Array(pcmDataBuffer);
-                    const wavBlob = pcmToWav(pcm16, sampleRate);
-                    
-                    const audioUrl = URL.createObjectURL(wavBlob);
-                    
-                    // 3. Play audio
-                    currentAudio.src = audioUrl;
-                    
-                    // Attach cleanup and callback
-                    const handleEnded = () => {
-                        if (onEndCallback) onEndCallback();
-                        URL.revokeObjectURL(audioUrl); // Clean up the Blob URL
-                        currentAudio.removeEventListener('ended', handleEnded);
-                    };
-                    currentAudio.addEventListener('ended', handleEnded);
-                    
-                    currentAudio.play().catch(e => console.error("Audio playback failed:", e));
-
-                    return; // Success
-                } else {
-                    throw new Error("پاسخ صوتی معتبر نبود.");
-                }
-            } catch (error) {
-                console.error(`Attempt ${attempts + 1} failed for TTS:`, (error as Error).message);
-                attempts++;
-                if (attempts >= maxAttempts) {
-                    // Log failure but continue execution
-                    console.error('TTS: Failed to generate audio after multiple retries.');
-                    break;
-                }
-                const delay = Math.pow(2, attempts) * 1000;
-                await new Promise(resolve => setTimeout(resolve, delay));
+            if (!response.ok) {
+                 const errorDetail = await response.text();
+                 console.error("TTS API FAILED:", response.status, errorDetail);
+                 throw new Error(`TTS API Error: ${response.status} - ${errorDetail.substring(0, 100)}`);
             }
+
+            const result = await response.json();
+            const part = result?.candidates?.[0]?.content?.parts?.[0];
+            const audioData = part?.inlineData?.data;
+            const mimeType = part?.inlineData?.mimeType; 
+            
+            if (!audioData || !mimeType || !mimeType.startsWith("audio/L16")) {
+                console.error("TTS: Invalid audio data received. Result:", result);
+                throw new Error("Invalid audio data received from TTS API. MIME Type or data missing.");
+            }
+            
+            console.log("TTS: Received audio data (MIME:", mimeType, "Size:", audioData.length, "bytes)");
+            
+            // Extract sample rate from mimeType
+            const rateMatch = mimeType.match(/rate=(\d+)/);
+            const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+
+            // 1. Decode base64 to raw PCM data buffer
+            const pcmDataBuffer = base64ToArrayBuffer(audioData);
+            
+            // 2. Convert raw PCM (Int16) to WAV Blob
+            const pcm16 = new Int16Array(pcmDataBuffer);
+            const wavBlob = pcmToWav(pcm16, sampleRate);
+            
+            // 3. Play the WAV Blob using HTML Audio Element
+            const audioUrl = URL.createObjectURL(wavBlob);
+            const audio = new Audio(audioUrl);
+            
+            audio.onended = () => {
+                console.log("TTS: Playback ended successfully.");
+                URL.revokeObjectURL(audioUrl); 
+                if (onEndCallback) onEndCallback();
+                if (messageIndex !== null) setSpeakingIndex(null); 
+            };
+            
+            audio.onerror = (e) => {
+                console.error('TTS: Audio playback failed', e);
+                setTtsError("خطا در پخش فایل صوتی. (ممکن است مشکل از مرورگر باشد)");
+                URL.revokeObjectURL(audioUrl); 
+                if (onEndCallback) onEndCallback();
+                if (messageIndex !== null) setSpeakingIndex(null); 
+            };
+            
+            audio.play().catch(e => {
+                console.warn("TTS: Autoplay failed (browser restriction). User interaction might be required.", e);
+                // In case of autoplay block, we rely on the user clicking the replay button.
+                // We keep the state as is, but clear the error indicator
+                setTtsError("اجرای خودکار صدا توسط مرورگر مسدود شد. لطفاً دکمه 🎙️ را فشار دهید.");
+                if (onEndCallback) onEndCallback();
+                if (messageIndex !== null) setSpeakingIndex(null); 
+            });
+
+
+        } catch (e) {
+            const errorMsg = (e as Error).message;
+            console.error("Gemini TTS playback failed:", errorMsg);
+            setTtsError(`خطا در پردازش صدا: ${errorMsg}`);
+             if (onEndCallback) onEndCallback();
+             if (messageIndex !== null) setSpeakingIndex(null); 
         }
-        
-        // Fallback on failure
-        if (onEndCallback) onEndCallback();
 
-    }, [GEMINI_API_KEY]); // Dependency on API key (constant)
-
-
+    }, [speakingIndex]); 
+    
     // Initial Message Setup based on Mode
     useEffect(() => {
         setMessages([]); 
         stopRecording(); 
-        if (audioInstanceRef.current) {
-            audioInstanceRef.current.pause(); // Stop TTS playback
-            audioInstanceRef.current.src = '';
-        }
-
+        
         if (mode === 'chat') {
             setMessages([{ 
                 role: 'model', 
@@ -333,7 +363,7 @@ const App: FC = () => {
             } else {
                  setMessages([{ 
                     role: 'model', 
-                    text: 'متأسفانه مرورگر شما از قابلیت‌های تشخیص گفتار پشتیبانی نمی‌کند. لطفاً از تب چت استفاده کنید.',
+                    text: 'متأسفانه مرورگر شما از قابلیت تشخیص گفتار پشتیبانی نمی‌کند. لطفاً از تب چت استفاده کنید.',
                     type: 'voice_chat'
                 }]);
             }
@@ -353,7 +383,7 @@ const App: FC = () => {
     const typeMessage = (
         fullText: string, 
         messageIndex: number, 
-        finishCallback: () => void // Callback no longer needs fullText
+        finishCallback: () => void 
     ) => {
         let currentText = '';
         let i = 0;
@@ -401,9 +431,6 @@ const App: FC = () => {
         if (isRecording || !isSpeechSupported || mode !== 'voice') return;
         
         stopRecording(); 
-        if (audioInstanceRef.current) {
-            audioInstanceRef.current.pause(); // Stop TTS playback
-        }
 
         const recognition = new SpeechRecognition();
         recognition.lang = "fa-IR"; 
@@ -475,19 +502,18 @@ const App: FC = () => {
         if (!messageText.trim()) return;
         
         stopRecording();
-        if (audioInstanceRef.current) {
-            audioInstanceRef.current.pause();
-        }
-
+        setTtsError(null);
 
         // 1. Add user message to history
+        // Filter out feature messages (summary, ideas) and the initial welcome message if no real chat started
+        const historyForAPI = messages.filter(m => m.type !== 'summary' && m.type !== 'idea' && m.text.trim() !== 'به حالت چت متنی خوش آمدید. چطور می‌توانم امروز به شما کمک کنم؟ (پاسخ‌ها به‌صورت همزمان با متن، صوتی پخش می‌شوند)');
+        
         const newUserMessage: MessageData = { 
             role: 'user', 
             text: messageText, 
             type: isVoiceMode ? 'voice_chat' : undefined 
         };
         
-        const historyForAPI = messages.filter(m => m.type !== 'summary' && m.type !== 'idea');
         const newMessages: MessageData[] = [...historyForAPI, newUserMessage];
         
         // 2. Add empty model message placeholder and get its index
@@ -522,7 +548,7 @@ const App: FC = () => {
         let botResponseText = 'متأسفانه در حال حاضر قادر به برقراری ارتباط با هوش مصنوعی نیستم. لطفاً دوباره تلاش کنید.';
 
         try {
-            botResponseText = await fetchWithRetry(payload);
+            botResponseText = await fetchWithRetry(payload, "gemini-2.5-flash-preview-05-20");
         } catch (error) {
             console.error('Final API fetch error:', (error as Error).message);
             botResponseText = `خطای اتصال: ${(error as Error).message}`;
@@ -534,32 +560,46 @@ const App: FC = () => {
             });
             setIsLoading(false);
             
-            speakResponse(botResponseText); // Speak error message
+            // Speak error message without setting the speaking index permanently
+            speakResponse(botResponseText); 
             return;
         }
 
-        // === منطق جدید برای همزمانی: بلافاصله بعد از دریافت متن، پخش صدا را شروع می‌کنیم ===
-        speakResponse(botResponseText);
+        // 3. منطق همزمانی: بلافاصله بعد از دریافت متن، پخش صدا را شروع می‌کنیم
+        // Pass the index for the initial playback indicator
+        speakResponse(botResponseText, botMessageIndex);
         
         // 4. Start typing simulation for the AI response concurrently
         typeMessage(botResponseText, botMessageIndex, () => {
             // Callback after typing finishes
             setIsLoading(false);
-            // TTS is already running/finished, no need to call speakResponse here.
         });
     };
     
     // --- Special Features (Available in BOTH Chat and Voice Modes) ---
 
     const getRelevantMessagesForFeatures = (currentMode: 'chat' | 'voice') => {
-        const filterType = currentMode === 'voice' ? (m: MessageData) => m.type === 'voice_chat' : (m: MessageData) => m.type !== 'summary' && m.type !== 'idea' && m.type !== 'voice_chat';
-        return messages.filter(filterType);
+        // Only include messages relevant to the current mode (voice_chat for voice, others for chat)
+        const filterType = currentMode === 'voice' 
+            ? (m: MessageData) => m.type === 'voice_chat'
+            : (m: MessageData) => m.type !== 'summary' && m.type !== 'idea' && m.type !== 'voice_chat';
+            
+        // Filter out initial welcome message if no real user interaction has happened
+        const filteredMessages = messages.filter(filterType);
+        
+        // Remove the initial welcome message from the list used for feature context if it's the only model message
+        return filteredMessages.filter((msg, index) => {
+            if (msg.role === 'model' && index === 0 && msg.text.includes('خوش آمدید')) {
+                return false;
+            }
+            return true;
+        });
     };
 
     const summarizeConversation = async (currentMode: 'chat' | 'voice') => {
         const chatMessages = getRelevantMessagesForFeatures(currentMode);
 
-        if (chatMessages.length <= 1) { 
+        if (chatMessages.length < 2) { // Need at least 1 user + 1 model response for meaningful summary
             const noConvoMessage = "مکالمه‌ای برای خلاصه‌سازی وجود ندارد. لطفا ابتدا گفتگو را شروع کنید.";
             setMessages(prev => [...prev, { role: 'model', text: noConvoMessage, type: 'summary' }]);
             speakResponse(noConvoMessage);
@@ -567,7 +607,6 @@ const App: FC = () => {
         }
 
         setIsSummarizing(true);
-        if (audioInstanceRef.current) { audioInstanceRef.current.pause(); }
 
         const conversationText: string = chatMessages.map(msg => `${msg.role === 'user' ? 'کاربر' : 'ربات'}: ${msg.text}`).join('\n');
         const systemPrompt: string = "شما یک دستیار خلاصه‌سازی هوشمند هستید. متن زیر یک مکالمه است. لطفاً آن را به فارسی و در یک پاراگراف، به صورت شیوا و مختصر خلاصه کنید. تمرکز بر نکات اصلی، تصمیمات یا موضوعات کلیدی مکالمه باشد.";
@@ -587,24 +626,23 @@ const App: FC = () => {
 
         let summaryText = 'متأسفانه خطایی در ارتباط با هوش مصنوعی رخ داده است.';
         try {
-            summaryText = await fetchWithRetry(payload);
+            summaryText = await fetchWithRetry(payload, "gemini-2.5-flash-preview-05-20");
         } catch (error) {
             summaryText = `خطا در خلاصه‌سازی مکالمه: ${(error as Error).message}`;
         }
         
         // همزمانی: ابتدا صدا، سپس تایپ
-        speakResponse(summaryText);
+        speakResponse(summaryText, messageIndex);
         
         typeMessage(summaryText, messageIndex, () => {
             setIsSummarizing(false);
-            // TTS is handled above
         });
     };
     
     const generateAlternativeIdeas = async (currentMode: 'chat' | 'voice') => {
         const chatMessages = getRelevantMessagesForFeatures(currentMode);
         
-        if (chatMessages.length <= 1) {
+        if (chatMessages.length < 2) {
             const noIdeaMessage = "مکالمه‌ای برای تولید ایده وجود ندارد. لطفا ابتدا گفتگو را شروع کنید.";
             setMessages(prev => [...prev, { role: 'model', text: noIdeaMessage, type: 'idea' }]);
             speakResponse(noIdeaMessage);
@@ -612,7 +650,6 @@ const App: FC = () => {
         }
 
         setIsGeneratingIdeas(true);
-        if (audioInstanceRef.current) { audioInstanceRef.current.pause(); }
 
         const conversationText: string = chatMessages.map(msg => `${msg.role === 'user' ? 'کاربر' : 'ربات'}: ${msg.text}`).join('\n');
         const systemPrompt: string = "شما یک دستیار خلاق هستید. بر اساس مکالمه زیر، پنج ایده، راه‌حل یا پاسخ جایگزین برای موضوع اصلی گفتگو ارائه دهید. پاسخ را به صورت لیست شماره‌گذاری شده در قالب Markdown و به زبان فارسی برگردانید.";
@@ -632,17 +669,16 @@ const App: FC = () => {
 
         let ideasText = 'متأسفانه خطایی در ارتباط با هوش مصنوعی رخ داده است.';
         try {
-            ideasText = await fetchWithRetry(payload);
+            ideasText = await fetchWithRetry(payload, "gemini-2.5-flash-preview-05-20");
         } catch (error) {
             ideasText = `خطا در تولید ایده‌های جایگزین: ${(error as Error).message}`;
         }
         
         // همزمانی: ابتدا صدا، سپس تایپ
-        speakResponse("ایده‌های جایگزین آماده شد."); 
+        speakResponse("ایده‌های جایگزین آماده شد.", messageIndex); 
         
         typeMessage(ideasText, messageIndex, () => {
             setIsGeneratingIdeas(false);
-            // TTS is handled above
         });
     };
     
@@ -657,9 +693,11 @@ const App: FC = () => {
                 {lines.map((line, index) => {
                     const lineTrimmed = line.trim();
                     if (lineTrimmed.match(/^\d+\.\s/)) {
+                        // Renders numbered list items correctly, removing the number from the start
                         return <li key={index} className="mr-6 list-decimal text-white">{lineTrimmed.replace(/^\d+\.\s*/, '')}</li>;
                     }
                     if (lineTrimmed.match(/^- \s/)) {
+                         // Renders bullet points
                         return <li key={index} className="mr-6 list-disc text-white">{lineTrimmed.replace(/^- \s*/, '')}</li>;
                     }
                     if (lineTrimmed.startsWith('## ')) {
@@ -674,8 +712,18 @@ const App: FC = () => {
         );
     };
 
-    const Message: FC<{ message: MessageData, typing: boolean }> = ({ message, typing }) => {
+    const Message: FC<{ 
+        message: MessageData, 
+        typing: boolean,
+        index: number, 
+        speakingIndex: number | null, 
+        speakResponse: (text: string, index: number) => void
+    }> = ({ message, typing, index, speakingIndex, speakResponse }) => {
         const isUser: boolean = message.role === 'user';
+        const isModelResponse = message.role === 'model';
+        const isTextPresent = message.text && message.text.trim().length > 0;
+        const isPlaying = isModelResponse && speakingIndex === index;
+        
         const type = message.type; 
         
         let bgColor: string;
@@ -711,7 +759,6 @@ const App: FC = () => {
         }
 
         const alignContainer: string = isUser ? 'justify-end' : 'justify-start';
-        const align: string = isUser ? 'items-end' : 'items-start';
 
         const Content = () => {
             if (type === 'idea') {
@@ -723,7 +770,7 @@ const App: FC = () => {
 
         return (
             <div className={`flex w-full mt-4 ${alignContainer}`}>
-                <div className={`flex flex-col max-w-[80%] ${align}`}>
+                <div className={`flex flex-col max-w-[80%] ${isUser ? 'items-end' : 'items-start'}`}>
                     <div className="flex items-center space-x-2 mb-1 dir-rtl">
                         <span className={`p-1 rounded-full ${iconBgColor} text-white`}>
                             <Icon />
@@ -734,10 +781,29 @@ const App: FC = () => {
                     <div className="text-sm p-4 rounded-xl shadow-lg whitespace-pre-wrap text-white" 
                          style={{ direction: 'rtl', textAlign: 'right' }}>
                         
-                        <div className={`${bgColor} p-2 rounded-xl ${isUser ? 'rounded-br-none' : 'rounded-tl-none'}`}>
-                            <div className={typing ? 'typing-cursor' : ''}>
+                        <div className={`${bgColor} p-2 rounded-xl ${isUser ? 'rounded-br-none' : 'rounded-tl-none'} flex justify-between items-start space-x-2`}>
+                            
+                            {/* Text Content Area */}
+                            <div className={typing ? 'typing-cursor' : ''} style={{ maxWidth: '90%' }}>
                                 <Content />
                             </div>
+
+                            {/* Speaker Button (Only for Model Messages with Text) */}
+                            {isModelResponse && isTextPresent && (
+                                <button
+                                    // IMPORTANT: Pass the index to the speakResponse function for correct identification
+                                    onClick={() => speakResponse(message.text, index)}
+                                    className={`flex-shrink-0 mr-2 p-1 rounded-full transition duration-150 ${isPlaying ? 'bg-red-200' : 'bg-transparent hover:bg-gray-600'}`}
+                                    title="پخش مجدد پیام"
+                                    disabled={isPlaying || typing}
+                                >
+                                    {isPlaying ? (
+                                        <svg className="animate-spin h-4 w-4 text-red-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                    ) : (
+                                        <SpeakerIcon />
+                                    )}
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -748,8 +814,10 @@ const App: FC = () => {
     const isAppBusy: boolean = isLoading || isSummarizing || isGeneratingIdeas || isRecording;
     const isWaitingForLLM = isLoading || isSummarizing || isGeneratingIdeas;
 
+
     return (
         <div className="min-h-screen bg-gray-900 flex flex-col items-center p-4 font-inter text-right" style={{ fontFamily: 'Vazirmatn, Tahoma, sans-serif' }}>
+            <script src="https://cdn.tailwindcss.com"></script>
             <style jsx global>{`
                 @font-face {
                     font-family: 'Vazirmatn';
@@ -810,12 +878,18 @@ const App: FC = () => {
                         🎙️ مکالمه (صوتی)
                     </button>
                 </div>
+                
+                {(mode === 'voice' || ttsError) && (
+                     <div className={`mt-4 p-3 rounded-xl text-sm font-medium shadow-md text-center ${ttsError ? 'bg-red-800 text-white' : 'bg-sky-800 text-white'}`}>
+                        {ttsError ? `خطای پخش صدا: ${ttsError}` : 'نکته: سیستم پخش صدای بومی مرورگر حذف شد. اکنون از سرویس پیشرفته **Gemini TTS** برای پخش صدا استفاده می‌شود.'}
+                     </div>
+                )}
 
                 {mode === 'chat' && (
                     <div className="flex justify-center flex-wrap gap-3 mt-4">
                         <button
                             onClick={() => summarizeConversation('chat')}
-                            disabled={isAppBusy || getRelevantMessagesForFeatures('chat').length <= 1}
+                            disabled={isAppBusy || getRelevantMessagesForFeatures('chat').length < 2}
                             className="bg-purple-600 text-white p-3 rounded-lg shadow-md hover:bg-purple-700 transition duration-200 disabled:bg-purple-400 disabled:cursor-not-allowed flex items-center text-sm"
                         >
                             {isSummarizing ? (
@@ -832,7 +906,7 @@ const App: FC = () => {
                         
                         <button
                             onClick={() => generateAlternativeIdeas('chat')}
-                            disabled={isAppBusy || getRelevantMessagesForFeatures('chat').length <= 1}
+                            disabled={isAppBusy || getRelevantMessagesForFeatures('chat').length < 2}
                             className="bg-green-600 text-white p-3 rounded-lg shadow-md hover:bg-green-700 transition duration-200 disabled:bg-green-400 disabled:cursor-not-allowed flex items-center text-sm"
                         >
                             {isGeneratingIdeas ? (
@@ -857,6 +931,9 @@ const App: FC = () => {
                         <div key={index}>
                             <Message 
                                 message={msg} 
+                                index={index} 
+                                speakingIndex={speakingIndex} 
+                                speakResponse={speakResponse} 
                                 typing={
                                     !msg.text.includes('خطا') && 
                                     msg.role === 'model' && 
@@ -897,7 +974,7 @@ const App: FC = () => {
                             <div className="flex justify-center flex-wrap gap-3 mb-4 w-full">
                                 <button
                                     onClick={() => summarizeConversation('voice')}
-                                    disabled={isAppBusy || getRelevantMessagesForFeatures('voice').length <= 1}
+                                    disabled={isAppBusy || getRelevantMessagesForFeatures('voice').length < 2}
                                     className="bg-purple-600 text-white p-3 rounded-lg shadow-md hover:bg-purple-700 transition duration-200 disabled:bg-purple-400 disabled:cursor-not-allowed flex items-center text-sm"
                                 >
                                     {isSummarizing ? (
@@ -907,7 +984,7 @@ const App: FC = () => {
                                 
                                 <button
                                     onClick={() => generateAlternativeIdeas('voice')}
-                                    disabled={isAppBusy || getRelevantMessagesForFeatures('voice').length <= 1}
+                                    disabled={isAppBusy || getRelevantMessagesForFeatures('voice').length < 2}
                                     className="bg-green-600 text-white p-3 rounded-lg shadow-md hover:bg-green-700 transition duration-200 disabled:bg-green-400 disabled:cursor-not-allowed flex items-center text-sm"
                                 >
                                     {isGeneratingIdeas ? (
@@ -923,6 +1000,13 @@ const App: FC = () => {
                                     style={{ whiteSpace: 'pre-wrap' }} 
                                 >
                                     {voiceStatusMessage}
+                                </div>
+                            )}
+                            
+                            {/* Display transcribed text if available */}
+                            {input && (
+                                <div className="p-3 mb-4 rounded-xl text-base font-medium shadow-inner w-full text-center bg-gray-700 text-indigo-400">
+                                    {input}
                                 </div>
                             )}
 
@@ -958,7 +1042,7 @@ const App: FC = () => {
 
                             {!isVoiceAvailable && (
                                 <p className="mt-3 text-sm text-red-400">
-                                    قابلیت‌های تشخیص گفتار در مرورگر شما فعال نیست.
+                                    قابلیت تشخیص گفتار در مرورگر شما فعال نیست. (TTS اکنون با Gemini کار می‌کند)
                                 </p>
                             )}
                         </div>
