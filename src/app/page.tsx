@@ -197,7 +197,7 @@ const App: FC = () => {
     const [voiceStatusMessage, setVoiceStatusMessage] = useState<string | null>(null);
     const [ttsError, setTtsError] = useState<string | null>(null);
     const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
-    const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
+    const [selectedVoice, setSelectedVoice] = useState<string>('nova');
     const recognitionRef = useRef<any>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -207,7 +207,10 @@ const App: FC = () => {
             setSpeakingIndex(index);
             const audio = new Audio(message.audioUrl);
             audio.onended = () => setSpeakingIndex(null);
-            audio.onerror = () => setSpeakingIndex(null);
+            audio.onerror = () => {
+                console.warn("Cached audio replay failed");
+                setSpeakingIndex(null);
+            };
             audio.play().catch(e => {
                 console.warn("Cached audio replay failed", e);
                 setSpeakingIndex(null);
@@ -218,11 +221,12 @@ const App: FC = () => {
     }, []);
 
     const availableVoices = [
-        { name: 'Kore', label: 'Kore (Firm)' },
-        { name: 'Puck', label: 'Puck (Upbeat)' },
-        { name: 'Charon', label: 'Charon (Informative)' },
-        { name: 'Zephyr', label: 'Zephyr (Bright)' },
-        { name: 'Achernar', label: 'Achernar (Soft)' },
+        { name: 'alloy', label: 'Alloy (طبیعی و آرام)' },
+        { name: 'echo', label: 'Echo (واضح و مستقیم)' },
+        { name: 'fable', label: 'Fable (داستانی و گرم)' },
+        { name: 'onyx', label: 'Onyx (عمیق و مردانه)' },
+        { name: 'nova', label: 'Nova (زنانه و پویا)' },
+        { name: 'shimmer', label: 'Shimmer (نرم و ملایم)' },
     ];
     
     // Cleanup
@@ -248,47 +252,141 @@ const App: FC = () => {
         .catch(error => console.error('Error fetching Avalai models:', error));
     }, []);
 
-    // TTS Function
-    const speakResponse = useCallback(async (text: string, messageIndex: number | null = null, onEndCallback?: () => void) => {
-        setTtsError(null);
-        
-        if (messageIndex !== null) {
-            setSpeakingIndex(messageIndex);
-        }
-
-        // استفاده از Web Speech API برای TTS (راه حل ساده)
-        try {
-            if ('speechSynthesis' in window) {
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = 'fa-IR';
-                utterance.rate = 0.9;
-                utterance.pitch = 1;
-                
-                utterance.onend = () => {
-                    if (onEndCallback) onEndCallback();
-                    if (messageIndex !== null) setSpeakingIndex(null);
-                };
-                
-                utterance.onerror = (e) => {
-                    console.error('TTS Error:', e);
-                    setTtsError("خطا در پخش صدا");
-                    if (onEndCallback) onEndCallback();
-                    if (messageIndex !== null) setSpeakingIndex(null);
-                };
-                
-                speechSynthesis.speak(utterance);
-            } else {
-                setTtsError("مرورگر شما از قابلیت متن به گفتار پشتیبانی نمی‌کند");
-                if (onEndCallback) onEndCallback();
+    // TTS Function using AvalAI API
+    const speakResponse = useCallback(
+        async (
+            text: string,
+            messageIndex: number | null = null,
+            onEndCallback?: () => void
+        ) => {
+            // بررسی اعتبار پارامترها
+            if (!text || text.trim().length === 0) {
+                console.warn('TTS: متن خالی است');
                 if (messageIndex !== null) setSpeakingIndex(null);
+                if (onEndCallback) onEndCallback();
+                return;
             }
-        } catch (e) {
-            console.error("TTS failed:", e);
-            setTtsError("خطا در پردازش صدا");
-            if (onEndCallback) onEndCallback();
-            if (messageIndex !== null) setSpeakingIndex(null);
-        }
-    }, []);
+            if (text.length > 4000) { // محدودیت OpenAI/AvalAI
+                text = text.substring(0, 4000) + '...';
+                console.warn('TTS: متن کوتاه شد به دلیل محدودیت طول');
+            }
+
+            setTtsError(null);
+            if (messageIndex !== null) {
+                setSpeakingIndex(messageIndex);
+            }
+
+            // تابع retry برای TTS
+            const fetchTTSAudio = async (attempt: number = 0): Promise<string> => {
+                const maxRetries = 3;
+                try {
+                    const ttsPayload = {
+                        model: 'tts-1',
+                        input: text,
+                        voice: selectedVoice,
+                    };
+
+                    const response = await fetch('https://api.avalai.ir/v1/audio/speech', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${AVALAI_API_KEY}`,
+                        },
+                        body: JSON.stringify(ttsPayload),
+                    });
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        const requestIdMatch = errorText.match(/request ID ([a-f0-9-]+)/i);
+                        const requestId = requestIdMatch ? requestIdMatch[1] : 'نامشخص';
+                        
+                        if (response.status === 400 && errorText.includes('request parameters')) {
+                            throw new Error(`پارامترهای درخواست نامعتبر: ${errorText.substring(0, 100)}. Request ID: ${requestId}. لطفاً با support@avalai.ir تماس بگیرید.`);
+                        }
+                        if (response.status === 429) {
+                            throw new Error('محدودیت نرخ درخواست. در حال retry...');
+                        }
+                        throw new Error(`خطای TTS API: ${response.status}. جزئیات: ${errorText.substring(0, 150)}`);
+                    }
+
+                    const audioBlob = await response.blob();
+                    return URL.createObjectURL(audioBlob);
+                } catch (error) {
+                    console.error(`TTS Attempt ${attempt + 1} failed:`, error);
+                    if (attempt < maxRetries - 1) {
+                        const delay = Math.pow(2, attempt + 1) * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        return fetchTTSAudio(attempt + 1);
+                    }
+                    throw error;
+                }
+            };
+
+            let audioUrl: string | null = null;
+            try {
+                audioUrl = await fetchTTSAudio();
+                
+                // ذخیره URL در پیام برای replay
+                if (messageIndex !== null && audioUrl) {
+                    setMessages((prev) => {
+                        const updated = [...prev];
+                        if (updated[messageIndex]) {
+                            updated[messageIndex] = { ...updated[messageIndex], audioUrl };
+                        }
+                        return updated;
+                    });
+                }
+
+                // پخش صدا
+                const audio = new Audio(audioUrl);
+                audio.onended = () => {
+                    if (onEndCallback) onEndCallback();
+                    if (messageIndex !== null) setSpeakingIndex(null);
+                    if (audioUrl) URL.revokeObjectURL(audioUrl);
+                };
+                audio.onerror = () => {
+                    console.error('پخش صدا شکست خورد');
+                    setTtsError('خطا در پخش فایل صوتی');
+                    if (onEndCallback) onEndCallback();
+                    if (messageIndex !== null) setSpeakingIndex(null);
+                    if (audioUrl) URL.revokeObjectURL(audioUrl);
+                };
+
+                await audio.play();
+            } catch (e) {
+                console.error('TTS نهایی شکست خورد:', e);
+                const errorMsg = (e as Error).message;
+                setTtsError(`خطا در TTS: ${errorMsg}`);
+                
+                // Fallback به Web Speech API
+                if ('speechSynthesis' in window) {
+                    console.log('Fallback به Web Speech API');
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.lang = 'fa-IR';
+                    utterance.rate = 0.9;
+                    utterance.pitch = 1;
+                    
+                    utterance.onend = () => {
+                        if (onEndCallback) onEndCallback();
+                        if (messageIndex !== null) setSpeakingIndex(null);
+                    };
+                    
+                    utterance.onerror = () => {
+                        setTtsError('هر دو TTS API و Web Speech شکست خوردند');
+                        if (onEndCallback) onEndCallback();
+                        if (messageIndex !== null) setSpeakingIndex(null);
+                    };
+                    
+                    speechSynthesis.speak(utterance);
+                } else {
+                    setTtsError('مرورگر از TTS پشتیبانی نمی‌کند');
+                }
+                
+                if (audioUrl) URL.revokeObjectURL(audioUrl);
+            }
+        },
+        [selectedVoice]
+    );
     
     // Initial Message Setup
     useEffect(() => {
