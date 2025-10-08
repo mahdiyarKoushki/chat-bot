@@ -148,7 +148,7 @@ const StopIcon: FC = () => (
 );
 
 const SpeakerIcon: FC = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 text-indigo-400 hover:text-indigo-300`}>
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 text-emerald-400 hover:text-emerald-300`}>
         <polyline points="15 8 20 13 15 18"></polyline>
         <path d="M10 5V19"></path>
         <path d="M4 17L10 12L4 7V17Z"></path>
@@ -346,6 +346,7 @@ const App: FC = () => {
 
             audio.onended = () => {
                 console.log("TTS: Playback ended successfully.");
+                // Do NOT revokeObjectURL here, as we want to keep the URL for caching
                 if (onEndCallback) onEndCallback();
                 if (messageIndex !== null) setSpeakingIndex(null);
             };
@@ -353,7 +354,7 @@ const App: FC = () => {
             audio.onerror = (e) => {
                 console.error('TTS: Audio playback failed', e);
                 setTtsError("خطا در پخش فایل صوتی. (ممکن است مشکل از مرورگر باشد)");
-                URL.revokeObjectURL(audioUrl); 
+                URL.revokeObjectURL(audioUrl); // Revoke only on error to prevent memory leaks for failed audio
                 if (onEndCallback) onEndCallback();
                 if (messageIndex !== null) setSpeakingIndex(null); 
             };
@@ -768,25 +769,25 @@ const App: FC = () => {
         let iconBgColor: string;
 
         if (isUser) {
-            bgColor = 'bg-indigo-600';
+            bgColor = 'bg-emerald-600';
             Icon = UserIcon;
             roleText = 'شما';
-            iconBgColor = 'bg-indigo-700';
+            iconBgColor = 'bg-emerald-700';
         } else if (type === 'summary') {
-            bgColor = 'bg-purple-600';
+            bgColor = 'bg-lime-600';
             Icon = BotIcon; 
             roleText = 'خلاصه مکالمه';
-            iconBgColor = 'bg-purple-700';
+            iconBgColor = 'bg-lime-700';
         } else if (type === 'idea') {
             bgColor = 'bg-green-600';
             Icon = BotIcon; 
             roleText = 'ایده‌های جایگزین';
             iconBgColor = 'bg-green-700';
         } else if (type === 'voice_chat') {
-            bgColor = 'bg-sky-700';
+            bgColor = 'bg-teal-700';
             Icon = BotIcon;
             roleText = 'دستیار صوتی';
-            iconBgColor = 'bg-sky-800';
+            iconBgColor = 'bg-teal-800';
         } else {
             bgColor = 'bg-gray-700';
             Icon = BotIcon;
@@ -827,7 +828,7 @@ const App: FC = () => {
                             {/* Speaker Button (Only for Model Messages with Text) */}
                             {isModelResponse && isTextPresent && (
                                 <button
-                                    // IMPORTANT: Pass the index to the replayAudio function for correct identification
+                                    // IMPORTANT: Pass the message object and index to the replayAudio function for correct identification
                                     onClick={() => replayAudio(message, index)}
                                     className={`flex-shrink-0 mr-2 p-1 rounded-full transition duration-150 ${isPlaying ? 'bg-red-200' : 'bg-transparent hover:bg-gray-600'}`}
                                     title="پخش مجدد پیام"
@@ -852,7 +853,7 @@ const App: FC = () => {
 
 
     return (
-        <div className="min-h-screen bg-gray-900 flex flex-col items-center p-4 font-inter text-right" style={{ fontFamily: 'Vazirmatn, Tahoma, sans-serif' }}>
+        <div className="min-h-screen bg-gray-900 flex flex-col items-center p-4 font-inter text-right bg-tarhan-kuhdasht bg-cover bg-center" style={{ fontFamily: 'Vazirmatn, Tahoma, sans-serif' }}>
             <script src="https://cdn.tailwindcss.com"></script>
             <style jsx global>{`
                 @font-face {
@@ -887,18 +888,23 @@ const App: FC = () => {
                     margin-right: 2px;
                     animation: cursor-blink 0.7s infinite;
                 }
+                .bg-tarhan-kuhdasht {
+                    background-image: url('/img/tarhan.jpg');
+                    background-blend-mode: overlay;
+                    background-color: rgba(0, 0, 0, 0.5); /* برای خوانایی بیشتر، overlay تیره اضافه شده */
+                }
             `}</style>
 
             <header className="w-full max-w-3xl mb-4 pt-4">
-                <h1 className="text-3xl font-bold text-center text-indigo-400">
-                    دستیار هوش مصنوعی
+                <h1 className="text-3xl font-bold text-center text-emerald-400">
+                    دیار طرهان
                 </h1>
                 
                 <div className="flex justify-center p-1 bg-gray-800 rounded-xl shadow-inner mt-4">
                     <button
                         onClick={() => setMode('chat')}
                         className={`flex-1 p-3 rounded-xl transition-all font-semibold text-sm ${
-                            mode === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:bg-gray-700'
+                            mode === 'chat' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:bg-gray-700'
                         }`}
                         disabled={isAppBusy}
                     >
@@ -907,19 +913,19 @@ const App: FC = () => {
                     <button
                         onClick={() => setMode('voice')}
                         className={`flex-1 p-3 rounded-xl transition-all font-semibold text-sm ${
-                            mode === 'voice' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:bg-gray-700'
+                            mode === 'voice' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:bg-gray-700'
                         }`}
                         disabled={isAppBusy}
                     >
                         🎙️ مکالمه (صوتی)
                     </button>
                 </div>
-                
+{/*                 
                 {(mode === 'voice' || ttsError) && (
-                     <div className={`mt-4 p-3 rounded-xl text-sm font-medium shadow-md text-center ${ttsError ? 'bg-red-800 text-white' : 'bg-sky-800 text-white'}`}>
+                     <div className={`mt-4 p-3 rounded-xl text-sm font-medium shadow-md text-center ${ttsError ? 'bg-red-800 text-white' : 'bg-teal-800 text-white'}`}>
                         {ttsError ? `خطای پخش صدا: ${ttsError}` : 'نکته: سیستم پخش صدای بومی مرورگر حذف شد. اکنون از سرویس پیشرفته **Gemini TTS** برای پخش صدا استفاده می‌شود.'}
                      </div>
-                )}
+                )} */}
 
                 <div className="mt-4 flex flex-col items-center">
                     <label htmlFor="voice-select" className="text-gray-300 text-sm mb-2">
@@ -930,7 +936,7 @@ const App: FC = () => {
                         value={selectedVoice}
                         onChange={(e) => setSelectedVoice(e.target.value)}
                         disabled={isAppBusy}
-                        className="p-2 rounded-lg bg-gray-700 border border-gray-600 text-white focus:outline-none focus:border-indigo-500 transition shadow-inner text-center"
+                        className="p-2 rounded-lg bg-gray-700 border border-gray-600 text-white focus:outline-none focus:border-emerald-500 transition shadow-inner text-center"
                     >
                         {availableVoices.map((voice) => (
                             <option key={voice.name} value={voice.name}>
@@ -945,7 +951,7 @@ const App: FC = () => {
                         <button
                             onClick={() => summarizeConversation('chat')}
                             disabled={isAppBusy || getRelevantMessagesForFeatures('chat').length < 2}
-                            className="bg-purple-600 text-white p-3 rounded-lg shadow-md hover:bg-purple-700 transition duration-200 disabled:bg-purple-400 disabled:cursor-not-allowed flex items-center text-sm"
+                            className="bg-lime-600 text-white p-3 rounded-lg shadow-md hover:bg-lime-700 transition duration-200 disabled:bg-lime-400 disabled:cursor-not-allowed flex items-center text-sm"
                         >
                             {isSummarizing ? (
                                 <span className="flex items-center">
@@ -1011,13 +1017,13 @@ const App: FC = () => {
                                 onChange={(e) => setInput(e.target.value)}
                                 placeholder="پیام خود را بنویسید..."
                                 disabled={isAppBusy}
-                                className="flex-grow p-4 rounded-xl bg-gray-700 border border-gray-600 text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500 transition shadow-inner text-right"
+                                className="flex-grow p-4 rounded-xl bg-gray-700 border border-gray-600 text-white placeholder-gray-400 focus:outline-none focus:border-emerald-500 transition shadow-inner text-right"
                                 style={{ direction: 'rtl' }}
                             />
                             <button
                                 type="submit"
                                 disabled={isAppBusy || !input.trim()}
-                                className="bg-indigo-600 text-white p-4 rounded-xl shadow-lg hover:bg-indigo-700 transition duration-200 disabled:bg-indigo-400 disabled:cursor-not-allowed flex items-center justify-center transform hover:scale-105"
+                                className="bg-emerald-600 text-white p-4 rounded-xl shadow-lg hover:bg-emerald-700 transition duration-200 disabled:bg-emerald-400 disabled:cursor-not-allowed flex items-center justify-center transform hover:scale-105"
                             >
                                 <SendIcon />
                                 <span className="mr-2 hidden sm:inline">ارسال</span>
@@ -1030,7 +1036,7 @@ const App: FC = () => {
                                 <button
                                     onClick={() => summarizeConversation('voice')}
                                     disabled={isAppBusy || getRelevantMessagesForFeatures('voice').length < 2}
-                                    className="bg-purple-600 text-white p-3 rounded-lg shadow-md hover:bg-purple-700 transition duration-200 disabled:bg-purple-400 disabled:cursor-not-allowed flex items-center text-sm"
+                                    className="bg-lime-600 text-white p-3 rounded-lg shadow-md hover:bg-lime-700 transition duration-200 disabled:bg-lime-400 disabled:cursor-not-allowed flex items-center text-sm"
                                 >
                                     {isSummarizing ? (
                                         <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
@@ -1051,7 +1057,7 @@ const App: FC = () => {
 
                             {voiceStatusMessage && (
                                 <div 
-                                    className={`p-3 mb-4 rounded-xl text-sm font-medium shadow-md w-full text-center ${isRecording ? 'bg-indigo-700 text-white' : 'bg-gray-700 text-gray-300'}`}
+                                    className={`p-3 mb-4 rounded-xl text-sm font-medium shadow-md w-full text-center ${isRecording ? 'bg-emerald-700 text-white' : 'bg-gray-700 text-gray-300'}`}
                                     style={{ whiteSpace: 'pre-wrap' }} 
                                 >
                                     {voiceStatusMessage}
@@ -1060,7 +1066,7 @@ const App: FC = () => {
                             
                             {/* Display transcribed text if available */}
                             {input && (
-                                <div className="p-3 mb-4 rounded-xl text-base font-medium shadow-inner w-full text-center bg-gray-700 text-indigo-400">
+                                <div className="p-3 mb-4 rounded-xl text-base font-medium shadow-inner w-full text-center bg-gray-700 text-emerald-400">
                                     {input}
                                 </div>
                             )}
@@ -1074,7 +1080,7 @@ const App: FC = () => {
                                         ? 'bg-red-600 hover:bg-red-700 ring-4 ring-red-400 animate-pulse' 
                                         : isWaitingForLLM
                                         ? 'bg-gray-500 cursor-not-allowed'
-                                        : 'bg-indigo-600 hover:bg-indigo-700'
+                                        : 'bg-emerald-600 hover:bg-emerald-700'
                                     }
                                     ${!isVoiceAvailable ? 'opacity-50 cursor-not-allowed' : ''}
                                 `}

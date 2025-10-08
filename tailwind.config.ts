@@ -7,7 +7,11 @@ const config: Config = {
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
-    extend: {},
+    extend: {
+      backgroundImage: {
+        'tarhan-kuhdasht': "url('/Koohdasht_spring_tree.JPG')",
+      },
+    },
   },
   plugins: [],
 };
