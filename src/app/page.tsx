@@ -331,7 +331,7 @@ const App: FC = () => {
                     setMessages((prev) => {
                         const updated = [...prev];
                         if (updated[messageIndex]) {
-                            updated[messageIndex] = { ...updated[messageIndex], audioUrl };
+                            updated[messageIndex] = { ...updated[messageIndex], audioUrl: audioUrl ?? undefined };
                         }
                         return updated;
                     });
