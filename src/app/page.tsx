@@ -12,42 +12,35 @@ declare global {
 // --- Types and Constants ---
 
 interface MessageData {
-    role: 'user' | 'model';
+    role: 'user' | 'assistant';
     text: string;
     type?: 'summary' | 'idea' | 'voice_chat';
-    audioUrl?: string; // Add audioUrl to cache generated speech
+    audioUrl?: string;
 }
 
-interface ChatPart {
-    text: string;
-}
-
-interface ChatContent {
-    role: 'user' | 'model' | 'function';
-    parts: ChatPart[];
+interface ChatMessage {
+    role: 'user' | 'assistant' | 'system';
+    content: string;
 }
 
 interface Payload {
-    contents: ChatContent[];
-    systemInstruction?: { parts: ChatPart[] };
+    messages: ChatMessage[];
+    model?: string;
+    stream?: boolean;
+    max_tokens?: number;
+    temperature?: number;
 }
 
-const GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "AIzaSyBRaiHrhBunws4_Z_ac8iAgrpMi2AlHRAY"; // Use environment variable
+const AVALAI_API_KEY = "aa-QzIvMriEbO9Rjf4mfG88WPp6Xx0rcqcaxvJHkGcm9EHvSUQG";
 const SpeechRecognition = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
 const isSpeechSupported = typeof SpeechRecognition === 'function';
-// Native TTS is explicitly disabled and replaced by Gemini TTS
 const isVoiceAvailable = isSpeechSupported;
 
-// --- Audio Utility Functions for PCM to WAV Conversion (Required for Gemini TTS API) ---
+// --- Audio Utility Functions ---
 
-/**
- * Converts a base64 string to an ArrayBuffer.
- * @param base64 Base64 encoded string.
- */
 const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
     const binaryString = atob(base64);
     const len = binaryString.length;
-    // CRITICAL FIX: Initialize Uint8Array before populating it
     const bytes = new Uint8Array(len); 
     for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
@@ -55,57 +48,40 @@ const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
     return bytes.buffer;
 };
 
-/**
- * Writes a string to a DataView starting at the specified offset.
- */
 const writeString = (view: DataView, offset: number, string: string): void => {
     for (let i = 0; i < string.length; i++) {
         view.setUint8(offset + i, string.charCodeAt(i));
     }
 };
 
-/**
- * Converts 16-bit signed PCM data to a standard WAV audio blob.
- * @param pcm16 Int16Array of the raw PCM data.
- * @param sampleRate The sample rate (e.g., 24000).
- */
 const pcmToWav = (pcm16: Int16Array, sampleRate: number): Blob => {
     const numChannels = 1;
     const bitsPerSample = 16;
     const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
     const blockAlign = numChannels * (bitsPerSample / 8);
     
-    // Total size of the PCM data in bytes
     const dataSize = pcm16.length * 2; 
-    
-    // Total size of the WAV file header + data
     const buffer = new ArrayBuffer(44 + dataSize);
     const view = new DataView(buffer);
 
     let offset = 0;
 
-    // RIFF chunk
     writeString(view, offset, 'RIFF'); offset += 4;
-    view.setUint32(offset, 36 + dataSize, true); offset += 4; // Chunk Size (Total size - 8)
+    view.setUint32(offset, 36 + dataSize, true); offset += 4;
     writeString(view, offset, 'WAVE'); offset += 4;
 
-    // FMT sub-chunk
     writeString(view, offset, 'fmt '); offset += 4;
-    view.setUint32(offset, 16, true); offset += 4;      // Sub-chunk size (16 for PCM)
-    view.setUint16(offset, 1, true); offset += 2;       // Audio format (1 for PCM)
-    view.setUint16(offset, numChannels, true); offset += 2; // Number of channels
-    view.setUint32(offset, sampleRate, true); offset += 4; // Sample rate
-    view.setUint32(offset, byteRate, true); offset += 4;   // Byte rate
-    view.setUint16(offset, blockAlign, true); offset += 2; // Block align
-    view.setUint16(offset, bitsPerSample, true); offset += 2; // Bits per sample
+    view.setUint32(offset, 16, true); offset += 4;
+    view.setUint16(offset, 1, true); offset += 2;
+    view.setUint16(offset, numChannels, true); offset += 2;
+    view.setUint32(offset, sampleRate, true); offset += 4;
+    view.setUint32(offset, byteRate, true); offset += 4;
+    view.setUint16(offset, blockAlign, true); offset += 2;
+    view.setUint16(offset, bitsPerSample, true); offset += 2;
 
-    // DATA sub-chunk
     writeString(view, offset, 'data'); offset += 4;
-    // CRITICAL FIX: Previously, this line was incorrectly writing 'data' again.
-    // It must write the size of the data payload.
-    view.setUint32(offset, dataSize, true); offset += 4; // Data size
+    view.setUint32(offset, dataSize, true); offset += 4;
     
-    // Write PCM samples (Int16)
     for (let i = 0; i < pcm16.length; i++) {
         view.setInt16(offset, pcm16[i], true);
         offset += 2;
@@ -113,7 +89,6 @@ const pcmToWav = (pcm16: Int16Array, sampleRate: number): Blob => {
 
     return new Blob([view], { type: 'audio/wav' });
 };
-
 
 // --- Icons ---
 
@@ -155,23 +130,26 @@ const SpeakerIcon: FC = () => (
     </svg>
 );
 
-// --- API Helper Function (for Text Generation) ---
+// --- API Helper Function ---
 
-/**
- * Helper function for API call with exponential backoff (for Text Generation)
- */
-const fetchWithRetry = async (payload: Payload, modelName: string): Promise<string> => {
+const fetchWithRetry = async (payload: Payload): Promise<string> => {
     const maxRetries = 5;
     let attempt = 0;
     
-    const apiKey = GEMINI_API_KEY; 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    const apiUrl = `https://api.avalai.ir/v1/chat/completions`;
 
     while (attempt < maxRetries) {
         try {
+            if (!AVALAI_API_KEY) {
+                throw new Error("AVALAI_API_KEY is not defined.");
+            }
+
             const response = await fetch(apiUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${AVALAI_API_KEY}`
+                },
                 body: JSON.stringify(payload)
             });
 
@@ -184,7 +162,7 @@ const fetchWithRetry = async (payload: Payload, modelName: string): Promise<stri
             }
 
             const result = await response.json();
-            const text = result.candidates?.[0]?.content?.parts?.[0]?.text as (string | undefined);
+            const text = result.choices?.[0]?.message?.content as (string | undefined);
 
             return text || '';
 
@@ -192,7 +170,7 @@ const fetchWithRetry = async (payload: Payload, modelName: string): Promise<stri
             const errorMessage = (error as Error).message;
             console.error(`Attempt ${attempt + 1} failed:`, errorMessage);
             
-            if (errorMessage.includes("Client or API configuration error")) {
+            if (errorMessage.includes("Client or API configuration error") || errorMessage.includes("AVALAI_API_KEY is not defined")) {
                 throw error; 
             }
 
@@ -207,7 +185,6 @@ const fetchWithRetry = async (payload: Payload, modelName: string): Promise<stri
     return 'متأسفانه در حال حاضر قادر به برقراری ارتباط با هوش مصنوعی نیستم. لطفاً دوباره تلاش کنید.';
 };
 
-
 // Main Chatbot Application Component
 const App: FC = () => {
     const [messages, setMessages] = useState<MessageData[]>([]);
@@ -218,16 +195,15 @@ const App: FC = () => {
     const [isGeneratingIdeas, setIsGeneratingIdeas] = useState<boolean>(false);
     const [isRecording, setIsRecording] = useState<boolean>(false);
     const [voiceStatusMessage, setVoiceStatusMessage] = useState<string | null>(null);
-    const [ttsError, setTtsError] = useState<string | null>(null); // New state for TTS errors
+    const [ttsError, setTtsError] = useState<string | null>(null);
     const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
-    const [selectedVoice, setSelectedVoice] = useState<string>('Kore'); // Default voice
+    const [selectedVoice, setSelectedVoice] = useState<string>('Kore');
     const recognitionRef = useRef<any>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    // Function to replay audio, using cache if available
+    // Function to replay audio
     const replayAudio = useCallback((message: MessageData, index: number) => {
         if (message.audioUrl) {
-            // Use cached audio
             setSpeakingIndex(index);
             const audio = new Audio(message.audioUrl);
             audio.onended = () => setSpeakingIndex(null);
@@ -237,7 +213,6 @@ const App: FC = () => {
                 setSpeakingIndex(null);
             });
         } else {
-            // Generate new audio
             speakResponse(message.text, index);
         }
     }, []);
@@ -250,7 +225,7 @@ const App: FC = () => {
         { name: 'Achernar', label: 'Achernar (Soft)' },
     ];
     
-    // Cleanup any existing audio playback context on component unmount
+    // Cleanup
     useEffect(() => {
         return () => {
             if (recognitionRef.current) {
@@ -259,152 +234,88 @@ const App: FC = () => {
         };
     }, []);
 
-    
-    // --- TTS Playback Function (Using Gemini TTS API) ---
-    
-    /**
-     * Text-to-Speech (TTS) function using Gemini API.
-     */
+    // Fetch Avalai models on component mount
+    useEffect(() => {
+        fetch("https://api.avalai.ir/v1/models", {
+            method: "GET",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${AVALAI_API_KEY}`
+            }
+        })
+        .then(response => response.json())
+        .then(data => console.log("Avalai Models:", data))
+        .catch(error => console.error('Error fetching Avalai models:', error));
+    }, []);
+
+    // TTS Function
     const speakResponse = useCallback(async (text: string, messageIndex: number | null = null, onEndCallback?: () => void) => {
-        
-        // Clear previous errors
         setTtsError(null);
         
-        // Set state before API call
         if (messageIndex !== null) {
             setSpeakingIndex(messageIndex);
         }
 
-        const TTS_MODEL_NAME = "gemini-2.5-flash-preview-tts";
-        const apiKey = GEMINI_API_KEY; 
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL_NAME}:generateContent?key=${apiKey}`;
-
-        const payload = {
-            contents: [{ parts: [{ text: text }] }],
-            generationConfig: {
-                responseModalities: ["AUDIO"],
-                speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: { 
-                            // Using a voice that supports Farsi (Kore is a good general purpose voice)
-                            voiceName: selectedVoice 
-                        }
-                    }
-                }
-            },
-        };
-        
+        // استفاده از Web Speech API برای TTS (راه حل ساده)
         try {
-            console.log("TTS: Sending request for text:", text.substring(0, 50) + '...');
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-                 const errorDetail = await response.text();
-                 console.error("TTS API FAILED:", response.status, errorDetail);
-                 throw new Error(`TTS API Error: ${response.status} - ${errorDetail.substring(0, 100)}`);
-            }
-
-            const result = await response.json();
-            const part = result?.candidates?.[0]?.content?.parts?.[0];
-            const audioData = part?.inlineData?.data;
-            const mimeType = part?.inlineData?.mimeType; 
-            
-            if (!audioData || !mimeType || !mimeType.startsWith("audio/L16")) {
-                console.error("TTS: Invalid audio data received. Result:", result);
-                throw new Error("Invalid audio data received from TTS API. MIME Type or data missing.");
-            }
-            
-            console.log("TTS: Received audio data (MIME:", mimeType, "Size:", audioData.length, "bytes)");
-            
-            // Extract sample rate from mimeType
-            const rateMatch = mimeType.match(/rate=(\d+)/);
-            const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
-
-            // 1. Decode base64 to raw PCM data buffer
-            const pcmDataBuffer = base64ToArrayBuffer(audioData);
-            
-            // 2. Convert raw PCM (Int16) to WAV Blob
-            const pcm16 = new Int16Array(pcmDataBuffer);
-            const wavBlob = pcmToWav(pcm16, sampleRate);
-            
-            // 3. Play the WAV Blob using HTML Audio Element
-            const audioUrl = URL.createObjectURL(wavBlob);
-            const audio = new Audio(audioUrl);
-
-            // Cache the audioUrl in the message
-            setMessages(prev => {
-                const updated = [...prev];
-                if (messageIndex !== null && updated[messageIndex]) {
-                    updated[messageIndex] = { ...updated[messageIndex], audioUrl };
-                }
-                return updated;
-            });
-
-            audio.onended = () => {
-                console.log("TTS: Playback ended successfully.");
-                // Do NOT revokeObjectURL here, as we want to keep the URL for caching
+            if ('speechSynthesis' in window) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'fa-IR';
+                utterance.rate = 0.9;
+                utterance.pitch = 1;
+                
+                utterance.onend = () => {
+                    if (onEndCallback) onEndCallback();
+                    if (messageIndex !== null) setSpeakingIndex(null);
+                };
+                
+                utterance.onerror = (e) => {
+                    console.error('TTS Error:', e);
+                    setTtsError("خطا در پخش صدا");
+                    if (onEndCallback) onEndCallback();
+                    if (messageIndex !== null) setSpeakingIndex(null);
+                };
+                
+                speechSynthesis.speak(utterance);
+            } else {
+                setTtsError("مرورگر شما از قابلیت متن به گفتار پشتیبانی نمی‌کند");
                 if (onEndCallback) onEndCallback();
                 if (messageIndex !== null) setSpeakingIndex(null);
-            };
-            
-            audio.onerror = (e) => {
-                console.error('TTS: Audio playback failed', e);
-                setTtsError("خطا در پخش فایل صوتی. (ممکن است مشکل از مرورگر باشد)");
-                URL.revokeObjectURL(audioUrl); // Revoke only on error to prevent memory leaks for failed audio
-                if (onEndCallback) onEndCallback();
-                if (messageIndex !== null) setSpeakingIndex(null); 
-            };
-            
-            audio.play().catch(e => {
-                console.warn("TTS: Autoplay failed (browser restriction). User interaction might be required.", e);
-                // In case of autoplay block, we rely on the user clicking the replay button.
-                // We keep the state as is, but clear the error indicator
-                setTtsError("اجرای خودکار صدا توسط مرورگر مسدود شد. لطفاً دکمه 🎙️ را فشار دهید.");
-                if (onEndCallback) onEndCallback();
-                if (messageIndex !== null) setSpeakingIndex(null); 
-            });
-
-
+            }
         } catch (e) {
-            const errorMsg = (e as Error).message;
-            console.error("Gemini TTS playback failed:", errorMsg);
-            setTtsError(`خطا در پردازش صدا: ${errorMsg}`);
-             if (onEndCallback) onEndCallback();
-             if (messageIndex !== null) setSpeakingIndex(null); 
+            console.error("TTS failed:", e);
+            setTtsError("خطا در پردازش صدا");
+            if (onEndCallback) onEndCallback();
+            if (messageIndex !== null) setSpeakingIndex(null);
         }
-
-    }, [speakingIndex]); 
+    }, []);
     
-    // Initial Message Setup based on Mode
+    // Initial Message Setup
     useEffect(() => {
         setMessages([]); 
         stopRecording(); 
         
         if (mode === 'chat') {
             setMessages([{ 
-                role: 'model', 
-                text: 'به حالت چت متنی خوش آمدید. چطور می‌توانم امروز به شما کمک کنم؟ (پاسخ‌ها به‌صورت همزمان با متن، صوتی پخش می‌شوند)',
+                role: 'assistant', 
+                text: 'به حالت چت متنی خوش آمدید. چطور می‌توانم امروز به شما کمک کنم؟',
             }]);
             setInput(''); 
         } else if (mode === 'voice') {
             if (isVoiceAvailable) {
                 setMessages([{ 
-                    role: 'model', 
-                    text: 'به دستیار صوتی خوش آمدید. دکمه میکروفون را فشار دهید. پس از توقف ضبط، پیام شما به‌صورت خودکار ارسال می‌شود.',
+                    role: 'assistant', 
+                    text: 'به دستیار صوتی خوش آمدید. دکمه میکروفون را فشار دهید.',
                     type: 'voice_chat'
                 }]);
             } else {
                  setMessages([{ 
-                    role: 'model', 
-                    text: 'متأسفانه مرورگر شما از قابلیت تشخیص گفتار پشتیبانی نمی‌کند. لطفاً از تب چت استفاده کنید.',
+                    role: 'assistant', 
+                    text: 'متأسفانه مرورگر شما از قابلیت تشخیص گفتار پشتیبانی نمی‌کند.',
                     type: 'voice_chat'
                 }]);
             }
-             setInput(''); 
+            setInput(''); 
         }
     }, [mode]);
 
@@ -413,10 +324,7 @@ const App: FC = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
     
-    
-    /**
-     * Simulated Typing Effect (Streaming)
-     */
+    // Typing Effect
     const typeMessage = (
         fullText: string, 
         messageIndex: number, 
@@ -445,15 +353,12 @@ const App: FC = () => {
                 messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
             } else {
                 clearInterval(interval);
-                finishCallback(); // Call the finish callback
+                finishCallback();
             }
         }, typingSpeed);
     };
 
-
-    /**
-     * Stops the speech recognition process cleanly.
-     */
+    // Stop Recording
     const stopRecording = () => {
         if (recognitionRef.current) {
             recognitionRef.current.stop(); 
@@ -461,9 +366,7 @@ const App: FC = () => {
         }
     };
 
-    /**
-     * Speech-to-Text (STT) function with auto-send on stop
-     */
+    // Start Recording
     const startRecording = () => {
         if (isRecording || !isSpeechSupported || mode !== 'voice') return;
         
@@ -479,7 +382,7 @@ const App: FC = () => {
 
         recognition.onstart = () => {
             setIsRecording(true);
-            setVoiceStatusMessage(`در حال گوش دادن... دکمه را دوباره بزنید تا ضبط متوقف شده و پیام ارسال شود.`);
+            setVoiceStatusMessage(`در حال گوش دادن...`);
             setInput(''); 
             finalTranscript = '';
         };
@@ -502,20 +405,18 @@ const App: FC = () => {
             const messageToSend = finalTranscript.trim();
             
             if (messageToSend) {
-                 // AUTOMATIC SENDING after stop
                  sendMessage(new Event('submit') as unknown as FormEvent, messageToSend);
                  setInput(''); 
             } else {
-                setVoiceStatusMessage('صحبت شما تشخیص داده نشد. برای شروع مجدد، دکمه را فشار دهید.');
+                setVoiceStatusMessage('صحبت شما تشخیص داده نشد.');
                 setInput('');
             }
         };
 
         recognition.onerror = (event: any) => {
             setIsRecording(false);
-            setVoiceStatusMessage(`خطای میکروفون: ${event.error}. برای شروع مجدد، دکمه را فشار دهید.`);
+            setVoiceStatusMessage(`خطای میکروفون: ${event.error}`);
             setInput('');
-            console.error('Speech Recognition Error:', event.error);
         };
 
         try {
@@ -524,13 +425,11 @@ const App: FC = () => {
         } catch (e) {
             console.error("Error starting recognition:", e);
             setIsRecording(false);
-            setVoiceStatusMessage('خطا در شروع ضبط. برای شروع مجدد، دکمه را فشار دهید.');
+            setVoiceStatusMessage('خطا در شروع ضبط');
         }
     };
     
-    /**
-     * Function to handle message sending (text or voice)
-     */
+    // Send Message
     const sendMessage = async (e: FormEvent, messageText: string) => {
         e.preventDefault();
         
@@ -541,9 +440,12 @@ const App: FC = () => {
         stopRecording();
         setTtsError(null);
 
-        // 1. Add user message to history
-        // Filter out feature messages (summary, ideas) and the initial welcome message if no real chat started
-        const historyForAPI = messages.filter(m => m.type !== 'summary' && m.type !== 'idea' && m.text.trim() !== 'به حالت چت متنی خوش آمدید. چطور می‌توانم امروز به شما کمک کنم؟ (پاسخ‌ها به‌صورت همزمان با متن، صوتی پخش می‌شوند)');
+        // Filter messages for API
+        const historyForAPI = messages.filter(m => 
+            m.type !== 'summary' && 
+            m.type !== 'idea' && 
+            !m.text.includes('به حالت چت متنی خوش آمدید')
+        );
         
         const newUserMessage: MessageData = { 
             role: 'user', 
@@ -553,41 +455,54 @@ const App: FC = () => {
         
         const newMessages: MessageData[] = [...historyForAPI, newUserMessage];
         
-        // 2. Add empty model message placeholder and get its index
+        // Add empty assistant message
         const botMessageIndex = newMessages.length; 
         const botMessageType = isVoiceMode ? 'voice_chat' : undefined;
-        const newMessagesWithBotPlaceholder: MessageData[] = [...newMessages, { role: 'model', text: '', type: botMessageType }];
+        const newMessagesWithBotPlaceholder: MessageData[] = [...newMessages, { 
+            role: 'assistant', 
+            text: '', 
+            type: botMessageType 
+        }];
         
         setMessages(newMessagesWithBotPlaceholder);
         if (mode === 'chat') {
-             setInput(''); 
+            setInput(''); 
         }
         setIsLoading(true);
         setVoiceStatusMessage(null);
 
-        // Prepare chat history for API submission
-        const chatHistory: ChatContent[] = newMessages.map(msg => ({
-            role: msg.role === 'model' ? 'model' : 'user',
-            parts: [{ text: msg.text }]
+        // Prepare messages for Avalai API
+        const chatHistory: ChatMessage[] = newMessages.map(msg => ({
+            role: msg.role,
+            content: msg.text
         }));
 
-        let systemInstructionText: string = "شما یک دستیار چت هوشمند هستید و به زبان فارسی پاسخ می‌دهید.";
+        // System message based on mode
+        let systemMessage = "شما یک دستیار چت هوشمند هستید و به زبان فارسی پاسخ می‌دهید.";
         if (isVoiceMode) {
-            systemInstructionText = "شما یک دستیار مکالمه صوتی سریع هستید. پاسخ شما باید بسیار کوتاه، محاوره‌ای و مستقیم باشد (حداکثر یک یا دو جمله کوتاه).";
+            systemMessage = "شما یک دستیار مکالمه صوتی سریع هستید. پاسخ شما باید بسیار کوتاه، محاوره‌ای و مستقیم باشد (حداکثر یک یا دو جمله کوتاه).";
         }
 
+        // Add system message as the first message
+        const apiMessages: ChatMessage[] = [
+            { role: 'system', content: systemMessage },
+            ...chatHistory
+        ];
 
         const payload: Payload = {
-            contents: chatHistory,
-            systemInstruction: { parts: [{ text: systemInstructionText }] },
+            messages: apiMessages,
+            model: "gpt-4o",
+            stream: false,
+            max_tokens: 1000,
+            temperature: 0.7
         };
 
-        let botResponseText = 'متأسفانه در حال حاضر قادر به برقراری ارتباط با هوش مصنوعی نیستم. لطفاً دوباره تلاش کنید.';
+        let botResponseText = 'متأسفانه در حال حاضر قادر به برقراری ارتباط با هوش مصنوعی نیستم.';
 
         try {
-            botResponseText = await fetchWithRetry(payload, "gemini-2.5-flash-preview-05-20");
+            botResponseText = await fetchWithRetry(payload);
         } catch (error) {
-            console.error('Final API fetch error:', (error as Error).message);
+            console.error('Final API fetch error:', error);
             botResponseText = `خطای اتصال: ${(error as Error).message}`;
             
             setMessages(prev => { 
@@ -596,37 +511,27 @@ const App: FC = () => {
                 return updated;
             });
             setIsLoading(false);
-            
-            // Speak error message without setting the speaking index permanently
             speakResponse(botResponseText); 
             return;
         }
 
-        // 3. منطق همزمانی: بلافاصله بعد از دریافت متن، پخش صدا را شروع می‌کنیم
-        // Pass the index for the initial playback indicator
+        // Start TTS and typing
         speakResponse(botResponseText, botMessageIndex);
-        
-        // 4. Start typing simulation for the AI response concurrently
         typeMessage(botResponseText, botMessageIndex, () => {
-            // Callback after typing finishes
             setIsLoading(false);
         });
     };
     
-    // --- Special Features (Available in BOTH Chat and Voice Modes) ---
-
+    // Feature Functions
     const getRelevantMessagesForFeatures = (currentMode: 'chat' | 'voice') => {
-        // Only include messages relevant to the current mode (voice_chat for voice, others for chat)
         const filterType = currentMode === 'voice' 
             ? (m: MessageData) => m.type === 'voice_chat'
             : (m: MessageData) => m.type !== 'summary' && m.type !== 'idea' && m.type !== 'voice_chat';
             
-        // Filter out initial welcome message if no real user interaction has happened
         const filteredMessages = messages.filter(filterType);
         
-        // Remove the initial welcome message from the list used for feature context if it's the only model message
         return filteredMessages.filter((msg, index) => {
-            if (msg.role === 'model' && index === 0 && msg.text.includes('خوش آمدید')) {
+            if (msg.role === 'assistant' && index === 0 && msg.text.includes('خوش آمدید')) {
                 return false;
             }
             return true;
@@ -636,24 +541,31 @@ const App: FC = () => {
     const summarizeConversation = async (currentMode: 'chat' | 'voice') => {
         const chatMessages = getRelevantMessagesForFeatures(currentMode);
 
-        if (chatMessages.length < 2) { // Need at least 1 user + 1 model response for meaningful summary
-            const noConvoMessage = "مکالمه‌ای برای خلاصه‌سازی وجود ندارد. لطفا ابتدا گفتگو را شروع کنید.";
-            setMessages(prev => [...prev, { role: 'model', text: noConvoMessage, type: 'summary' }]);
+        if (chatMessages.length < 2) {
+            const noConvoMessage = "مکالمه‌ای برای خلاصه‌سازی وجود ندارد.";
+            setMessages(prev => [...prev, { role: 'assistant', text: noConvoMessage, type: 'summary' }]);
             speakResponse(noConvoMessage);
             return;
         }
 
         setIsSummarizing(true);
 
-        const conversationText: string = chatMessages.map(msg => `${msg.role === 'user' ? 'کاربر' : 'ربات'}: ${msg.text}`).join('\n');
-        const systemPrompt: string = "شما یک دستیار خلاصه‌سازی هوشمند هستید. متن زیر یک مکالمه است. لطفاً آن را به فارسی و در یک پاراگراف، به صورت شیوا و مختصر خلاصه کنید. تمرکز بر نکات اصلی، تصمیمات یا موضوعات کلیدی مکالمه باشد.";
+        const conversationText = chatMessages.map(msg => 
+            `${msg.role === 'user' ? 'کاربر' : 'ربات'}: ${msg.text}`
+        ).join('\n');
         
+        const apiMessages: ChatMessage[] = [
+            { role: 'system', content: "شما یک دستیار خلاصه‌سازی هوشمند هستید. متن مکالمه را به فارسی و مختصر خلاصه کنید." },
+            { role: 'user', content: `لطفاً این مکالمه را خلاصه کنید:\n\n${conversationText}` }
+        ];
+
         const payload: Payload = {
-            contents: [{ role: 'user', parts: [{ text: conversationText }] }],
-            systemInstruction: { parts: [{ text: systemPrompt }] },
+            messages: apiMessages,
+            model: "gpt-4o",
+            stream: false
         };
 
-        const placeholderMessage: MessageData = { role: 'model', text: '', type: 'summary' };
+        const placeholderMessage: MessageData = { role: 'assistant', text: '', type: 'summary' };
         let messageIndex = -1;
         
         setMessages(prev => {
@@ -661,16 +573,14 @@ const App: FC = () => {
             return [...prev, placeholderMessage];
         });
 
-        let summaryText = 'متأسفانه خطایی در ارتباط با هوش مصنوعی رخ داده است.';
+        let summaryText = 'خطا در خلاصه‌سازی';
         try {
-            summaryText = await fetchWithRetry(payload, "gemini-2.5-flash-preview-05-20");
+            summaryText = await fetchWithRetry(payload);
         } catch (error) {
-            summaryText = `خطا در خلاصه‌سازی مکالمه: ${(error as Error).message}`;
+            summaryText = `خطا: ${(error as Error).message}`;
         }
         
-        // همزمانی: ابتدا صدا، سپس تایپ
         speakResponse(summaryText, messageIndex);
-        
         typeMessage(summaryText, messageIndex, () => {
             setIsSummarizing(false);
         });
@@ -680,23 +590,36 @@ const App: FC = () => {
         const chatMessages = getRelevantMessagesForFeatures(currentMode);
         
         if (chatMessages.length < 2) {
-            const noIdeaMessage = "مکالمه‌ای برای تولید ایده وجود ندارد. لطفا ابتدا گفتگو را شروع کنید.";
-            setMessages(prev => [...prev, { role: 'model', text: noIdeaMessage, type: 'idea' }]);
+            const noIdeaMessage = "مکالمه‌ای برای تولید ایده وجود ندارد.";
+            setMessages(prev => [...prev, { role: 'assistant', text: noIdeaMessage, type: 'idea' }]);
             speakResponse(noIdeaMessage);
             return;
         }
 
         setIsGeneratingIdeas(true);
 
-        const conversationText: string = chatMessages.map(msg => `${msg.role === 'user' ? 'کاربر' : 'ربات'}: ${msg.text}`).join('\n');
-        const systemPrompt: string = "شما یک دستیار خلاق هستید. بر اساس مکالمه زیر، پنج ایده، راه‌حل یا پاسخ جایگزین برای موضوع اصلی گفتگو ارائه دهید. پاسخ را به صورت لیست شماره‌گذاری شده در قالب Markdown و به زبان فارسی برگردانید.";
+        const conversationText = chatMessages.map(msg => 
+            `${msg.role === 'user' ? 'کاربر' : 'ربات'}: ${msg.text}`
+        ).join('\n');
         
+        const apiMessages: ChatMessage[] = [
+            { 
+                role: 'system', 
+                content: "شما یک دستیار خلاق هستید. بر اساس مکالمه، ایده‌های جایگزین ارائه دهید." 
+            },
+            { 
+                role: 'user', 
+                content: `بر اساس این مکالمه، پنج ایده یا راه‌حل جایگزین ارائه دهید:\n\n${conversationText}` 
+            }
+        ];
+
         const payload: Payload = {
-            contents: [{ role: 'user', parts: [{ text: conversationText }] }],
-            systemInstruction: { parts: [{ text: systemPrompt }] },
+            messages: apiMessages,
+            model: "gpt-4o",
+            stream: false
         };
 
-        const placeholderMessage: MessageData = { role: 'model', text: '', type: 'idea' };
+        const placeholderMessage: MessageData = { role: 'assistant', text: '', type: 'idea' };
         let messageIndex = -1;
         
         setMessages(prev => {
@@ -704,46 +627,41 @@ const App: FC = () => {
             return [...prev, placeholderMessage];
         });
 
-        let ideasText = 'متأسفانه خطایی در ارتباط با هوش مصنوعی رخ داده است.';
+        let ideasText = 'خطا در تولید ایده';
         try {
-            ideasText = await fetchWithRetry(payload, "gemini-2.5-flash-preview-05-20");
+            ideasText = await fetchWithRetry(payload);
         } catch (error) {
-            ideasText = `خطا در تولید ایده‌های جایگزین: ${(error as Error).message}`;
+            ideasText = `خطا: ${(error as Error).message}`;
         }
         
-        // همزمانی: ابتدا صدا، سپس تایپ
-        speakResponse("ایده‌های جایگزین آماده شد.", messageIndex); 
-        
+        speakResponse("ایده‌های جایگزین آماده شد", messageIndex);
         typeMessage(ideasText, messageIndex, () => {
             setIsGeneratingIdeas(false);
         });
     };
     
-    // --- UI Components ---
-    
+    // UI Components
     const IdeaMarkdownRenderer: FC<{ content: string }> = ({ content }) => {
         if (!content) return null;
         
-        const lines: string[] = content.split('\n');
+        const lines = content.split('\n');
         return (
             <div className="space-y-2">
                 {lines.map((line, index) => {
                     const lineTrimmed = line.trim();
                     if (lineTrimmed.match(/^\d+\.\s/)) {
-                        // Renders numbered list items correctly, removing the number from the start
-                        return <li key={index} className="mr-6 list-decimal text-white">{lineTrimmed.replace(/^\d+\.\s*/, '')}</li>;
+                        return <li key={index} className="mr-6 list-decimal text-white">
+                            {lineTrimmed.replace(/^\d+\.\s*/, '')}
+                        </li>;
                     }
                     if (lineTrimmed.match(/^- \s/)) {
-                         // Renders bullet points
-                        return <li key={index} className="mr-6 list-disc text-white">{lineTrimmed.replace(/^- \s*/, '')}</li>;
+                        return <li key={index} className="mr-6 list-disc text-white">
+                            {lineTrimmed.replace(/^- \s*/, '')}
+                        </li>;
                     }
-                    if (lineTrimmed.startsWith('## ')) {
-                         return <h2 key={index} className="text-xl font-bold mt-4 mb-2 text-white">{lineTrimmed.substring(3)}</h2>;
-                    }
-                    if (lineTrimmed.startsWith('### ')) {
-                         return <h3 key={index} className="text-lg font-bold mt-3 mb-1 text-white">{lineTrimmed.substring(4)}</h3>;
-                    }
-                    return lineTrimmed ? <p key={index} className="text-white whitespace-pre-wrap">{lineTrimmed}</p> : null;
+                    return lineTrimmed ? 
+                        <p key={index} className="text-white whitespace-pre-wrap">{lineTrimmed}</p> : 
+                        null;
                 })}
             </div>
         );
@@ -756,17 +674,14 @@ const App: FC = () => {
         speakingIndex: number | null,
         replayAudio: (message: MessageData, index: number) => void
     }> = ({ message, typing, index, speakingIndex, replayAudio }) => {
-        const isUser: boolean = message.role === 'user';
-        const isModelResponse = message.role === 'model';
+        const isUser = message.role === 'user';
+        const isAssistantResponse = message.role === 'assistant';
         const isTextPresent = message.text && message.text.trim().length > 0;
-        const isPlaying = isModelResponse && speakingIndex === index;
+        const isPlaying = isAssistantResponse && speakingIndex === index;
         
         const type = message.type; 
         
-        let bgColor: string;
-        let Icon: FC;
-        let roleText: string;
-        let iconBgColor: string;
+        let bgColor, Icon, roleText, iconBgColor;
 
         if (isUser) {
             bgColor = 'bg-emerald-600';
@@ -795,7 +710,7 @@ const App: FC = () => {
             iconBgColor = 'bg-gray-800';
         }
 
-        const alignContainer: string = isUser ? 'justify-end' : 'justify-start';
+        const alignContainer = isUser ? 'justify-end' : 'justify-start';
 
         const Content = () => {
             if (type === 'idea') {
@@ -803,7 +718,6 @@ const App: FC = () => {
             }
             return <>{message.text}</>;
         };
-
 
         return (
             <div className={`flex w-full mt-4 ${alignContainer}`}>
@@ -820,22 +734,24 @@ const App: FC = () => {
                         
                         <div className={`${bgColor} p-2 rounded-xl ${isUser ? 'rounded-br-none' : 'rounded-tl-none'} flex justify-between items-start space-x-2`}>
                             
-                            {/* Text Content Area */}
                             <div className={typing ? 'typing-cursor' : ''} style={{ maxWidth: '90%' }}>
                                 <Content />
                             </div>
 
-                            {/* Speaker Button (Only for Model Messages with Text) */}
-                            {isModelResponse && isTextPresent && (
+                            {isAssistantResponse && isTextPresent && (
                                 <button
-                                    // IMPORTANT: Pass the message object and index to the replayAudio function for correct identification
                                     onClick={() => replayAudio(message, index)}
-                                    className={`flex-shrink-0 mr-2 p-1 rounded-full transition duration-150 ${isPlaying ? 'bg-red-200' : 'bg-transparent hover:bg-gray-600'}`}
+                                    className={`flex-shrink-0 mr-2 p-1 rounded-full transition duration-150 ${
+                                        isPlaying ? 'bg-red-200' : 'bg-transparent hover:bg-gray-600'
+                                    }`}
                                     title="پخش مجدد پیام"
                                     disabled={isPlaying || typing}
                                 >
                                     {isPlaying ? (
-                                        <svg className="animate-spin h-4 w-4 text-red-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                        <svg className="animate-spin h-4 w-4 text-red-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
                                     ) : (
                                         <SpeakerIcon />
                                     )}
@@ -848,9 +764,8 @@ const App: FC = () => {
         );
     };
     
-    const isAppBusy: boolean = isLoading || isSummarizing || isGeneratingIdeas || isRecording;
+    const isAppBusy = isLoading || isSummarizing || isGeneratingIdeas || isRecording;
     const isWaitingForLLM = isLoading || isSummarizing || isGeneratingIdeas;
-
 
     return (
         <div className="min-h-screen bg-gray-900 flex flex-col items-center p-4 font-inter text-right bg-tarhan-kuhdasht bg-cover bg-center" style={{ fontFamily: 'Vazirmatn, Tahoma, sans-serif' }}>
@@ -862,43 +777,22 @@ const App: FC = () => {
                     font-weight: 400;
                     font-style: normal;
                 }
-                body {
-                    direction: rtl; 
-                }
-                .custom-scrollbar::-webkit-scrollbar {
-                    width: 8px;
-                }
-                .custom-scrollbar::-webkit-scrollbar-track {
-                    background: #374151; 
-                    border-radius: 10px;
-                }
-                .custom-scrollbar::-webkit-scrollbar-thumb {
-                    background: #6366f1; 
-                    border-radius: 10px;
-                }
-                .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-                    background: #4f46e5; 
-                }
-                @keyframes cursor-blink {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0; }
-                }
-                .typing-cursor::after {
-                    content: '|';
-                    margin-right: 2px;
-                    animation: cursor-blink 0.7s infinite;
-                }
-                .bg-tarhan-kuhdasht {
+                body { direction: rtl; }
+                .custom-scrollbar::-webkit-scrollbar { width: 8px; }
+                .custom-scrollbar::-webkit-scrollbar-track { background: #374151; border-radius: 10px; }
+                .custom-scrollbar::-webkit-scrollbar-thumb { background: #6366f1; border-radius: 10px; }
+                .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #4f46e5; }
+                @keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+                .typing-cursor::after { content: '|'; margin-right: 2px; animation: cursor-blink 0.7s infinite; }
+                .bg-tarhan-kuhdasht { 
                     background-image: url('/img/tarhan.jpg');
                     background-blend-mode: overlay;
-                    background-color: rgba(0, 0, 0, 0.5); /* برای خوانایی بیشتر، overlay تیره اضافه شده */
+                    background-color: rgba(0, 0, 0, 0.5);
                 }
             `}</style>
 
             <header className="w-full max-w-3xl mb-4 pt-4">
-                <h1 className="text-3xl font-bold text-center text-emerald-400">
-                    دیار طرهان
-                </h1>
+                <h1 className="text-3xl font-bold text-center text-emerald-400">دیار طرهان</h1>
                 
                 <div className="flex justify-center p-1 bg-gray-800 rounded-xl shadow-inner mt-4">
                     <button
@@ -920,31 +814,6 @@ const App: FC = () => {
                         🎙️ مکالمه (صوتی)
                     </button>
                 </div>
-{/*                 
-                {(mode === 'voice' || ttsError) && (
-                     <div className={`mt-4 p-3 rounded-xl text-sm font-medium shadow-md text-center ${ttsError ? 'bg-red-800 text-white' : 'bg-teal-800 text-white'}`}>
-                        {ttsError ? `خطای پخش صدا: ${ttsError}` : 'نکته: سیستم پخش صدای بومی مرورگر حذف شد. اکنون از سرویس پیشرفته **Gemini TTS** برای پخش صدا استفاده می‌شود.'}
-                     </div>
-                )} */}
-
-                <div className="mt-4 flex flex-col items-center">
-                    <label htmlFor="voice-select" className="text-gray-300 text-sm mb-2">
-                        انتخاب صدا (Voice)
-                    </label>
-                    <select
-                        id="voice-select"
-                        value={selectedVoice}
-                        onChange={(e) => setSelectedVoice(e.target.value)}
-                        disabled={isAppBusy}
-                        className="p-2 rounded-lg bg-gray-700 border border-gray-600 text-white focus:outline-none focus:border-emerald-500 transition shadow-inner text-center"
-                    >
-                        {availableVoices.map((voice) => (
-                            <option key={voice.name} value={voice.name}>
-                                {voice.label}
-                            </option>
-                        ))}
-                    </select>
-                </div>
 
                 {mode === 'chat' && (
                     <div className="flex justify-center flex-wrap gap-3 mt-4">
@@ -955,14 +824,13 @@ const App: FC = () => {
                         >
                             {isSummarizing ? (
                                 <span className="flex items-center">
-                                    <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                    <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
                                     خلاصه‌سازی...
                                 </span>
-                            ) : (
-                                <>
-                                    <span>خلاصه‌سازی مکالمه ✨</span>
-                                </>
-                            )}
+                            ) : 'خلاصه‌سازی مکالمه ✨'}
                         </button>
                         
                         <button
@@ -972,21 +840,19 @@ const App: FC = () => {
                         >
                             {isGeneratingIdeas ? (
                                 <span className="flex items-center">
-                                    <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                    <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
                                     تولید ایده...
                                 </span>
-                            ) : (
-                                <>
-                                    <span>ایده‌های جایگزین ✨</span>
-                                </>
-                            )}
+                            ) : 'ایده‌های جایگزین ✨'}
                         </button>
                     </div>
                 )}
             </header>
 
             <main className="w-full max-w-3xl flex flex-col bg-gray-800 rounded-2xl shadow-2xl h-[75vh]">
-                
                 <div className="flex-grow p-5 overflow-y-auto custom-scrollbar">
                     {messages.map((msg, index) => (
                         <div key={index}>
@@ -997,7 +863,7 @@ const App: FC = () => {
                                 replayAudio={replayAudio}
                                 typing={
                                     !msg.text.includes('خطا') &&
-                                    msg.role === 'model' &&
+                                    msg.role === 'assistant' &&
                                     index === messages.length - 1 &&
                                     isWaitingForLLM
                                 }
@@ -1008,7 +874,6 @@ const App: FC = () => {
                 </div>
 
                 <div className="p-4 border-t border-gray-700">
-
                     {mode === 'chat' ? (
                         <form onSubmit={(e) => sendMessage(e, input)} className="flex space-x-2 dir-rtl">
                             <input
@@ -1023,7 +888,7 @@ const App: FC = () => {
                             <button
                                 type="submit"
                                 disabled={isAppBusy || !input.trim()}
-                                className="bg-emerald-600 text-white p-4 rounded-xl shadow-lg hover:bg-emerald-700 transition duration-200 disabled:bg-emerald-400 disabled:cursor-not-allowed flex items-center justify-center transform hover:scale-105"
+                                className="bg-emerald-600 text-white p-4 rounded-xl shadow-lg hover:bg-emerald-700 transition duration-200 disabled:bg-emerald-400 disabled:cursor-not-allowed flex items-center justify-center"
                             >
                                 <SendIcon />
                                 <span className="mr-2 hidden sm:inline">ارسال</span>
@@ -1031,7 +896,6 @@ const App: FC = () => {
                         </form>
                     ) : (
                         <div className="flex flex-col items-center justify-center">
-                            
                             <div className="flex justify-center flex-wrap gap-3 mb-4 w-full">
                                 <button
                                     onClick={() => summarizeConversation('voice')}
@@ -1039,7 +903,10 @@ const App: FC = () => {
                                     className="bg-lime-600 text-white p-3 rounded-lg shadow-md hover:bg-lime-700 transition duration-200 disabled:bg-lime-400 disabled:cursor-not-allowed flex items-center text-sm"
                                 >
                                     {isSummarizing ? (
-                                        <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                        <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
                                     ) : 'خلاصه‌سازی ✨'}
                                 </button>
                                 
@@ -1049,22 +916,22 @@ const App: FC = () => {
                                     className="bg-green-600 text-white p-3 rounded-lg shadow-md hover:bg-green-700 transition duration-200 disabled:bg-green-400 disabled:cursor-not-allowed flex items-center text-sm"
                                 >
                                     {isGeneratingIdeas ? (
-                                        <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                        <svg className="animate-spin mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
                                     ) : 'ایده‌های جایگزین ✨'}
                                 </button>
                             </div>
 
-
                             {voiceStatusMessage && (
-                                <div 
-                                    className={`p-3 mb-4 rounded-xl text-sm font-medium shadow-md w-full text-center ${isRecording ? 'bg-emerald-700 text-white' : 'bg-gray-700 text-gray-300'}`}
-                                    style={{ whiteSpace: 'pre-wrap' }} 
-                                >
+                                <div className={`p-3 mb-4 rounded-xl text-sm font-medium shadow-md w-full text-center ${
+                                    isRecording ? 'bg-emerald-700 text-white' : 'bg-gray-700 text-gray-300'
+                                }`}>
                                     {voiceStatusMessage}
                                 </div>
                             )}
                             
-                            {/* Display transcribed text if available */}
                             {input && (
                                 <div className="p-3 mb-4 rounded-xl text-base font-medium shadow-inner w-full text-center bg-gray-700 text-emerald-400">
                                     {input}
@@ -1081,13 +948,14 @@ const App: FC = () => {
                                         : isWaitingForLLM
                                         ? 'bg-gray-500 cursor-not-allowed'
                                         : 'bg-emerald-600 hover:bg-emerald-700'
-                                    }
-                                    ${!isVoiceAvailable ? 'opacity-50 cursor-not-allowed' : ''}
-                                `}
+                                    }`}
                             >
                                 {isWaitingForLLM ? (
                                     <>
-                                        <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                        <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
                                         <span className="text-sm font-bold text-white">منتظر پاسخ...</span>
                                     </>
                                 ) : (
@@ -1100,10 +968,9 @@ const App: FC = () => {
                                 )}
                             </button>
 
-
                             {!isVoiceAvailable && (
                                 <p className="mt-3 text-sm text-red-400">
-                                    قابلیت تشخیص گفتار در مرورگر شما فعال نیست. (TTS اکنون با Gemini کار می‌کند)
+                                    قابلیت تشخیص گفتار در مرورگر شما فعال نیست.
                                 </p>
                             )}
                         </div>
