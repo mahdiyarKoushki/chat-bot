@@ -14,7 +14,8 @@ declare global {
 interface MessageData {
     role: 'user' | 'model';
     text: string;
-    type?: 'summary' | 'idea' | 'voice_chat'; 
+    type?: 'summary' | 'idea' | 'voice_chat';
+    audioUrl?: string; // Add audioUrl to cache generated speech
 }
 
 interface ChatPart {
@@ -31,11 +32,11 @@ interface Payload {
     systemInstruction?: { parts: ChatPart[] };
 }
 
-const GEMINI_API_KEY = typeof __api_key !== 'undefined' ? __api_key : "AIzaSyCv4BNi1bigs-nGa5jzE5QzIW05mmwf4AI";
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "AIzaSyBRaiHrhBunws4_Z_ac8iAgrpMi2AlHRAY"; // Use environment variable
+const SpeechRecognition = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
 const isSpeechSupported = typeof SpeechRecognition === 'function';
 // Native TTS is explicitly disabled and replaced by Gemini TTS
-const isVoiceAvailable = isSpeechSupported; 
+const isVoiceAvailable = isSpeechSupported;
 
 // --- Audio Utility Functions for PCM to WAV Conversion (Required for Gemini TTS API) ---
 
@@ -218,9 +219,36 @@ const App: FC = () => {
     const [isRecording, setIsRecording] = useState<boolean>(false);
     const [voiceStatusMessage, setVoiceStatusMessage] = useState<string | null>(null);
     const [ttsError, setTtsError] = useState<string | null>(null); // New state for TTS errors
-    const [speakingIndex, setSpeakingIndex] = useState<number | null>(null); 
-    const recognitionRef = useRef<any>(null); 
-    const messagesEndRef = useRef<HTMLDivElement>(null); 
+    const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
+    const [selectedVoice, setSelectedVoice] = useState<string>('Kore'); // Default voice
+    const recognitionRef = useRef<any>(null);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    // Function to replay audio, using cache if available
+    const replayAudio = useCallback((message: MessageData, index: number) => {
+        if (message.audioUrl) {
+            // Use cached audio
+            setSpeakingIndex(index);
+            const audio = new Audio(message.audioUrl);
+            audio.onended = () => setSpeakingIndex(null);
+            audio.onerror = () => setSpeakingIndex(null);
+            audio.play().catch(e => {
+                console.warn("Cached audio replay failed", e);
+                setSpeakingIndex(null);
+            });
+        } else {
+            // Generate new audio
+            speakResponse(message.text, index);
+        }
+    }, []);
+
+    const availableVoices = [
+        { name: 'Kore', label: 'Kore (Firm)' },
+        { name: 'Puck', label: 'Puck (Upbeat)' },
+        { name: 'Charon', label: 'Charon (Informative)' },
+        { name: 'Zephyr', label: 'Zephyr (Bright)' },
+        { name: 'Achernar', label: 'Achernar (Soft)' },
+    ];
     
     // Cleanup any existing audio playback context on component unmount
     useEffect(() => {
@@ -259,7 +287,7 @@ const App: FC = () => {
                     voiceConfig: {
                         prebuiltVoiceConfig: { 
                             // Using a voice that supports Farsi (Kore is a good general purpose voice)
-                            voiceName: "Kore" 
+                            voiceName: selectedVoice 
                         }
                     }
                 }
@@ -306,12 +334,20 @@ const App: FC = () => {
             // 3. Play the WAV Blob using HTML Audio Element
             const audioUrl = URL.createObjectURL(wavBlob);
             const audio = new Audio(audioUrl);
-            
+
+            // Cache the audioUrl in the message
+            setMessages(prev => {
+                const updated = [...prev];
+                if (messageIndex !== null && updated[messageIndex]) {
+                    updated[messageIndex] = { ...updated[messageIndex], audioUrl };
+                }
+                return updated;
+            });
+
             audio.onended = () => {
                 console.log("TTS: Playback ended successfully.");
-                URL.revokeObjectURL(audioUrl); 
                 if (onEndCallback) onEndCallback();
-                if (messageIndex !== null) setSpeakingIndex(null); 
+                if (messageIndex !== null) setSpeakingIndex(null);
             };
             
             audio.onerror = (e) => {
@@ -712,13 +748,13 @@ const App: FC = () => {
         );
     };
 
-    const Message: FC<{ 
-        message: MessageData, 
+    const Message: FC<{
+        message: MessageData,
         typing: boolean,
-        index: number, 
-        speakingIndex: number | null, 
-        speakResponse: (text: string, index: number) => void
-    }> = ({ message, typing, index, speakingIndex, speakResponse }) => {
+        index: number,
+        speakingIndex: number | null,
+        replayAudio: (message: MessageData, index: number) => void
+    }> = ({ message, typing, index, speakingIndex, replayAudio }) => {
         const isUser: boolean = message.role === 'user';
         const isModelResponse = message.role === 'model';
         const isTextPresent = message.text && message.text.trim().length > 0;
@@ -791,8 +827,8 @@ const App: FC = () => {
                             {/* Speaker Button (Only for Model Messages with Text) */}
                             {isModelResponse && isTextPresent && (
                                 <button
-                                    // IMPORTANT: Pass the index to the speakResponse function for correct identification
-                                    onClick={() => speakResponse(message.text, index)}
+                                    // IMPORTANT: Pass the index to the replayAudio function for correct identification
+                                    onClick={() => replayAudio(message, index)}
                                     className={`flex-shrink-0 mr-2 p-1 rounded-full transition duration-150 ${isPlaying ? 'bg-red-200' : 'bg-transparent hover:bg-gray-600'}`}
                                     title="پخش مجدد پیام"
                                     disabled={isPlaying || typing}
@@ -885,6 +921,25 @@ const App: FC = () => {
                      </div>
                 )}
 
+                <div className="mt-4 flex flex-col items-center">
+                    <label htmlFor="voice-select" className="text-gray-300 text-sm mb-2">
+                        انتخاب صدا (Voice)
+                    </label>
+                    <select
+                        id="voice-select"
+                        value={selectedVoice}
+                        onChange={(e) => setSelectedVoice(e.target.value)}
+                        disabled={isAppBusy}
+                        className="p-2 rounded-lg bg-gray-700 border border-gray-600 text-white focus:outline-none focus:border-indigo-500 transition shadow-inner text-center"
+                    >
+                        {availableVoices.map((voice) => (
+                            <option key={voice.name} value={voice.name}>
+                                {voice.label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
                 {mode === 'chat' && (
                     <div className="flex justify-center flex-wrap gap-3 mt-4">
                         <button
@@ -929,15 +984,15 @@ const App: FC = () => {
                 <div className="flex-grow p-5 overflow-y-auto custom-scrollbar">
                     {messages.map((msg, index) => (
                         <div key={index}>
-                            <Message 
-                                message={msg} 
-                                index={index} 
-                                speakingIndex={speakingIndex} 
-                                speakResponse={speakResponse} 
+                            <Message
+                                message={msg}
+                                index={index}
+                                speakingIndex={speakingIndex}
+                                replayAudio={replayAudio}
                                 typing={
-                                    !msg.text.includes('خطا') && 
-                                    msg.role === 'model' && 
-                                    index === messages.length - 1 && 
+                                    !msg.text.includes('خطا') &&
+                                    msg.role === 'model' &&
+                                    index === messages.length - 1 &&
                                     isWaitingForLLM
                                 }
                             />

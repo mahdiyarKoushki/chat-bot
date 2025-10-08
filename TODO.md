@@ -1,0 +1,3 @@
+- [x] Modify speakResponse to store audioUrl in the message after generation
+- [x] Update the replay button logic to use cached audioUrl if available, else generate
+- [x] Test caching by generating a response and replaying without API call
