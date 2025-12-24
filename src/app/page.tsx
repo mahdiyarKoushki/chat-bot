@@ -1,11 +1,12 @@
 "use client"
 import React, { useState, useRef, useEffect, FC, FormEvent, useCallback } from 'react';
 
-// Define the necessary types for Speech Recognition
+// Define the necessary types for Speech Recognition and Puter
 declare global {
     interface Window {
         webkitSpeechRecognition: any;
         SpeechRecognition: any;
+        puter: any;
     }
 }
 
@@ -31,7 +32,6 @@ interface Payload {
     temperature?: number;
 }
 
-const AVALAI_API_KEY = "aa-QzIvMriEbO9Rjf4mfG88WPp6Xx0rcqcaxvJHkGcm9EHvSUQG";
 const SpeechRecognition = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
 const isSpeechSupported = typeof SpeechRecognition === 'function';
 const isVoiceAvailable = isSpeechSupported;
@@ -133,56 +133,19 @@ const SpeakerIcon: FC = () => (
 // --- API Helper Function ---
 
 const fetchWithRetry = async (payload: Payload): Promise<string> => {
-    const maxRetries = 5;
-    let attempt = 0;
-    
-    const apiUrl = `https://api.avalai.ir/v1/chat/completions`;
-
-    while (attempt < maxRetries) {
-        try {
-            if (!AVALAI_API_KEY) {
-                throw new Error("AVALAI_API_KEY is not defined.");
-            }
-
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${AVALAI_API_KEY}`
-                },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                if (response.status === 403 || response.status === 429 || response.status >= 500) {
-                     throw new Error(`API Error: ${response.status}. Retrying...`);
-                }
-                throw new Error(`Client or API configuration error! Status: ${response.status}. Details: ${errorText.substring(0, 150)}`);
-            }
-
-            const result = await response.json();
-            const text = result.choices?.[0]?.message?.content as (string | undefined);
-
-            return text || '';
-
-        } catch (error) {
-            const errorMessage = (error as Error).message;
-            console.error(`Attempt ${attempt + 1} failed:`, errorMessage);
-            
-            if (errorMessage.includes("Client or API configuration error") || errorMessage.includes("AVALAI_API_KEY is not defined")) {
-                throw error; 
-            }
-
-            attempt++;
-            if (attempt >= maxRetries) {
-                throw new Error('Failed to fetch response after multiple retries.');
-            }
-            const delay = Math.pow(2, attempt) * 1000;
-            await new Promise(resolve => setTimeout(resolve, delay));
+    // Use Puter for chat
+    try {
+        const prompt = payload.messages.map(m => `${m.role === 'system' ? 'System' : m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
+        const chat_resp = await window.puter.ai.chat(prompt, { model: 'claude-sonnet-4.5', stream: true });
+        let botResponseText = '';
+        for await (const part of chat_resp) {
+            botResponseText += part?.text || '';
         }
+        return botResponseText || 'متأسفانه در حال حاضر قادر به برقراری ارتباط با هوش مصنوعی نیستم. لطفاً دوباره تلاش کنید.';
+    } catch (error) {
+        console.error('Puter chat error:', error);
+        throw new Error('Failed to fetch response from Puter.');
     }
-    return 'متأسفانه در حال حاضر قادر به برقراری ارتباط با هوش مصنوعی نیستم. لطفاً دوباره تلاش کنید.';
 };
 
 // Main Chatbot Application Component
@@ -238,19 +201,6 @@ const App: FC = () => {
         };
     }, []);
 
-    // Fetch Avalai models on component mount
-    useEffect(() => {
-        fetch("https://api.avalai.ir/v1/models", {
-            method: "GET",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${AVALAI_API_KEY}`
-            }
-        })
-        .then(response => response.json())
-        .then(data => console.log("Avalai Models:", data))
-        .catch(error => console.error('Error fetching Avalai models:', error));
-    }, []);
 
     // TTS Function using AvalAI API
     const speakResponse = useCallback(
@@ -281,31 +231,20 @@ const App: FC = () => {
                 const maxRetries = 3;
                 try {
                     const ttsPayload = {
-                        model: 'tts-1',
-                        input: text,
-                        voice: selectedVoice,
+                        text: text,
+                        voice: 'fa-IR-FaridNeural',
                     };
 
-                    const response = await fetch('https://api.avalai.ir/v1/audio/speech', {
+                    const response = await fetch('https://persion-tts.vercel.app/tts', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            Authorization: `Bearer ${AVALAI_API_KEY}`,
                         },
                         body: JSON.stringify(ttsPayload),
                     });
 
                     if (!response.ok) {
                         const errorText = await response.text();
-                        const requestIdMatch = errorText.match(/request ID ([a-f0-9-]+)/i);
-                        const requestId = requestIdMatch ? requestIdMatch[1] : 'نامشخص';
-                        
-                        if (response.status === 400 && errorText.includes('request parameters')) {
-                            throw new Error(`پارامترهای درخواست نامعتبر: ${errorText.substring(0, 100)}. Request ID: ${requestId}. لطفاً با support@avalai.ir تماس بگیرید.`);
-                        }
-                        if (response.status === 429) {
-                            throw new Error('محدودیت نرخ درخواست. در حال retry...');
-                        }
                         throw new Error(`خطای TTS API: ${response.status}. جزئیات: ${errorText.substring(0, 150)}`);
                     }
 
